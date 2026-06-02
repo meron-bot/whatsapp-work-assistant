@@ -21,24 +21,23 @@ export class AnthropicProvider implements TextCompletionProvider {
       content: m.content,
     }));
 
-    // For JSON mode we prefill the assistant turn with "{" to force a JSON object.
-    if (options.jsonMode) {
-      messages.push({ role: 'assistant', content: '{' });
-    }
+    // JSON mode: instruct via system/user text (assistant prefill is not
+    // supported by all models). The planner parses the JSON object robustly.
+    const system = options.jsonMode
+      ? `${options.system ?? ''}\n\nRespond with ONLY a single valid JSON object. No markdown, no prose, no code fences.`.trim()
+      : options.system;
 
     const res = await this.client.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: options.maxTokens ?? 2000,
       temperature: options.temperature ?? 0,
-      system: options.system,
+      system,
       messages,
     });
 
-    const text = res.content
+    return res.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map((b) => b.text)
       .join('');
-
-    return options.jsonMode ? `{${text}` : text;
   }
 }

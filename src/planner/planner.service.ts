@@ -42,12 +42,18 @@ export class PlannerService {
   }
 
   private safeParseJson(raw: string): unknown {
-    // Be tolerant of stray markdown fences but never of missing structure.
-    const cleaned = raw
+    // Be tolerant of stray markdown fences / surrounding prose, but never of
+    // missing structure. Extract the outermost JSON object if present.
+    let cleaned = raw
       .trim()
       .replace(/^```(?:json)?/i, '')
       .replace(/```$/i, '')
       .trim();
+    const first = cleaned.indexOf('{');
+    const last = cleaned.lastIndexOf('}');
+    if (first !== -1 && last !== -1 && last > first) {
+      cleaned = cleaned.slice(first, last + 1);
+    }
     return JSON.parse(cleaned);
   }
 
