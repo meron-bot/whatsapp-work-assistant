@@ -1,0 +1,283 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum MessageStatus {
+  received
+  queued
+  processing
+  processed
+  failed
+  ignored
+}
+
+enum TaskStatus {
+  open
+  in_progress
+  waiting
+  done
+  cancelled
+}
+
+enum Priority {
+  low
+  medium
+  high
+  urgent
+}
+
+enum ReminderStatus {
+  pending
+  sent
+  cancelled
+}
+
+enum CalendarEventStatus {
+  proposed
+  created
+  cancelled
+}
+
+enum DocumentStatus {
+  draft
+  pending_approval
+  approved
+  sent
+  archived
+}
+
+enum OpenLoopStatus {
+  open
+  waiting_for_owner
+  waiting_for_other
+  done
+  ignored
+}
+
+enum ClarificationStatus {
+  pending
+  answered
+  cancelled
+  expired
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+  cancelled
+}
+
+enum RiskLevel {
+  medium
+  high
+}
+
+enum ActionResultStatus {
+  success
+  failed
+  skipped
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+model User {
+  id             String   @id @default(cuid())
+  name           String?
+  whatsappNumber String   @unique
+  timezone       String   @default("Asia/Jerusalem")
+  language       String   @default("he")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model WhatsAppMessage {
+  id                String        @id @default(cuid())
+  whatsappMessageId String        @unique
+  fromNumber        String
+  toNumber          String
+  messageType       String
+  rawPayload        Json
+  textContent       String?
+  mediaId           String?
+  receivedAt        DateTime      @default(now())
+  processedAt       DateTime?
+  status            MessageStatus @default(received)
+  error             String?
+
+  mediaAssets MediaAsset[]
+}
+
+model MediaAsset {
+  id                String   @id @default(cuid())
+  whatsappMessageId String?
+  mediaId           String
+  type              String
+  mimeType          String
+  originalFileName  String?
+  storagePath       String
+  publicUrl         String?
+  transcript        String?
+  extractedText     String?
+  aiSummary         String?
+  classification    String?
+  projectId         String?
+  createdAt         DateTime @default(now())
+
+  message WhatsAppMessage? @relation(fields: [whatsappMessageId], references: [id])
+  project Project?         @relation(fields: [projectId], references: [id])
+}
+
+model Task {
+  id              String     @id @default(cuid())
+  title           String
+  description     String?
+  status          TaskStatus @default(open)
+  priority        Priority   @default(medium)
+  dueDate         DateTime?
+  projectId       String?
+  sourceMessageId String?
+  sourceMediaId   String?
+  googleTaskId    String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  project Project? @relation(fields: [projectId], references: [id])
+}
+
+model Reminder {
+  id              String         @id @default(cuid())
+  title           String
+  description     String?
+  remindAt        DateTime
+  status          ReminderStatus @default(pending)
+  taskId          String?
+  sourceMessageId String?
+  createdAt       DateTime       @default(now())
+}
+
+model CalendarEvent {
+  id               String              @id @default(cuid())
+  googleEventId    String?
+  title            String
+  description      String?
+  startTime        DateTime
+  endTime          DateTime
+  participants     Json                @default("[]")
+  status           CalendarEventStatus @default(proposed)
+  requiresApproval Boolean             @default(false)
+  approvalId       String?
+  sourceMessageId  String?
+  createdAt        DateTime            @default(now())
+}
+
+model Project {
+  id            String   @id @default(cuid())
+  name          String   @unique
+  clientName    String?
+  driveFolderId String?
+  status        String   @default("active")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  media MediaAsset[]
+  tasks Task[]
+}
+
+model DocumentDraft {
+  id              String         @id @default(cuid())
+  title           String
+  documentType    String
+  language        String         @default("en")
+  status          DocumentStatus @default(draft)
+  googleDocId     String?
+  googleDriveUrl  String?
+  content         String?
+  sourceMessageId String?
+  sourceMediaId   String?
+  projectId       String?
+  approvalId      String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+}
+
+model OpenLoop {
+  id               String         @id @default(cuid())
+  title            String
+  description      String?
+  status           OpenLoopStatus @default(open)
+  priority         Priority       @default(medium)
+  dueDate          DateTime?
+  nextCheckAt      DateTime?
+  linkedTaskId     String?
+  linkedEventId    String?
+  linkedDocumentId String?
+  linkedMediaId    String?
+  sourceMessageId  String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+}
+
+model PendingClarification {
+  id                String              @id @default(cuid())
+  question          String
+  reason            String
+  missingFields     Json                @default("[]")
+  suggestedOptions  Json?
+  status            ClarificationStatus @default(pending)
+  sourceMessageId   String?
+  relatedEntityType String?
+  relatedEntityId   String?
+  answerMessageId   String?
+  answerText        String?
+  plannerContext    Json?
+  createdAt         DateTime            @default(now())
+  answeredAt        DateTime?
+  expiresAt         DateTime?
+}
+
+model Approval {
+  id                     String         @id @default(cuid())
+  actionType             String
+  description            String
+  riskLevel              RiskLevel
+  proposedPayload        Json
+  status                 ApprovalStatus @default(pending)
+  sourceMessageId        String?
+  approvalMessageId      String?
+  ownerResponseMessageId String?
+  createdAt              DateTime       @default(now())
+  decidedAt              DateTime?
+}
+
+model ActionLog {
+  id         String             @id @default(cuid())
+  actionType String
+  entityType String?
+  entityId   String?
+  payload    Json
+  result     Json?
+  status     ActionResultStatus
+  error      String?
+  createdAt  DateTime           @default(now())
+}
+
+model AgentMemory {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  source    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
