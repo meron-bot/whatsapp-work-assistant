@@ -1,0 +1,5 @@
+# Automatic HTTPS via Let's Encrypt. Caddy obtains and renews the certificate
+# for {$PUBLIC_DOMAIN} automatically — no manual cert steps required.
+{$PUBLIC_DOMAIN} {
+    reverse_proxy app:3000
+}

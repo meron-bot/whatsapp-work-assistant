@@ -9,6 +9,8 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
+    "seed": "node dist/scripts/seed.js",
+    "doctor": "bash scripts/doctor.sh",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",

@@ -21,6 +21,7 @@ const envSchema = z.object({
   WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
   WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().optional().default(''),
   META_APP_SECRET: z.string().optional().default(''),
+  META_APP_ID: z.string().optional().default(''),
 
   GOOGLE_CLIENT_ID: z.string().optional().default(''),
   GOOGLE_CLIENT_SECRET: z.string().optional().default(''),
