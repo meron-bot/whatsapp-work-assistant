@@ -62,7 +62,8 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
   async enqueueMessage(data: ProcessMessageJob): Promise<void> {
     await this.queue.add('process', data, {
       ...DEFAULT_JOB_OPTS,
-      jobId: `msg:${data.whatsappMessageId}`, // idempotency at the queue level
+      // idempotency at the queue level (BullMQ job ids must not contain ':')
+      jobId: `msg-${data.whatsappMessageId}`,
     });
   }
 

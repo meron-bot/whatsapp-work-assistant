@@ -1,4 +1,7 @@
 import 'reflect-metadata';
+import * as dotenv from 'dotenv';
+dotenv.config(); // load .env before env validation
+
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import * as express from 'express';
