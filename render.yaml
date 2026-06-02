@@ -1,0 +1,96 @@
+# Render Blueprint — provisions the whole stack from this one file.
+#
+# How to use (no CLI needed):
+#   1. Push this repo to GitHub (already done).
+#   2. On https://render.com -> "New" -> "Blueprint" -> pick this repo.
+#   3. Render creates: the web service (Docker), a Postgres DB, and a Redis.
+#      HTTPS is automatic. DATABASE_URL / REDIS_URL are wired automatically.
+#   4. In the web service "Environment" tab, paste the secret values
+#      (every var below with `sync: false`). Then "Manual Deploy".
+#   5. Open https://<your-app>.onrender.com/auth/google to connect Google,
+#      then run the webhook registration (see DEPLOY.md / `make webhook`).
+
+databases:
+  - name: work-assistant-db
+    databaseName: work_assistant
+    user: postgres
+    plan: free
+
+services:
+  - type: redis
+    name: work-assistant-redis
+    plan: free
+    ipAllowList: [] # internal access only
+
+  - type: web
+    name: work-assistant
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # --- wired automatically by Render ---
+      - key: DATABASE_URL
+        fromDatabase:
+          name: work-assistant-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: work-assistant-redis
+          type: redis
+          property: connectionString
+      # --- non-secret defaults ---
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+      - key: OWNER_TIMEZONE
+        value: Asia/Jerusalem
+      - key: OWNER_LANGUAGE
+        value: he
+      - key: AI_PLANNER_PROVIDER
+        value: anthropic
+      - key: AI_TRANSCRIPTION_PROVIDER
+        value: openai
+      - key: AI_VISION_PROVIDER
+        value: openai
+      - key: STORAGE_PROVIDER
+        value: local
+      - key: LOCAL_STORAGE_PATH
+        value: ./storage
+      - key: DAILY_PLAN_TIME
+        value: "07:30"
+      - key: MIDDAY_CHECKIN_TIME
+        value: "13:00"
+      - key: END_OF_DAY_TIME
+        value: "18:30"
+      # --- SECRETS: set these in the Render dashboard (sync:false = not in git) ---
+      - key: APP_BASE_URL
+        sync: false # e.g. https://work-assistant.onrender.com
+      - key: OWNER_WHATSAPP_NUMBER
+        sync: false # YOUR personal WhatsApp number (digits only)
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_BUSINESS_ACCOUNT_ID
+        sync: false
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false # https://<your-app>.onrender.com/auth/google/callback
+      - key: GOOGLE_TOKEN_ENCRYPTION_KEY
+        generateValue: true # Render generates a strong value for you
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
