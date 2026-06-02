@@ -9,3 +9,4 @@ storage/
 .DS_Store
 prisma/*.db
 *.tsbuildinfo
+dump.rdb
