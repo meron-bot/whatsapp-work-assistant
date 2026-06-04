@@ -7,6 +7,7 @@ import { PlannerModule } from '../planner/planner.module';
 import { MessageProcessorService } from '../processing/message-processor.service';
 import { QueueService } from '../queue/queue.service';
 import { WhatsAppController } from './whatsapp.controller';
+import { WebhookRegistrarService } from './webhook-registrar.service';
 
 @Module({
   imports: [
@@ -17,7 +18,8 @@ import { WhatsAppController } from './whatsapp.controller';
     ApprovalsModule,
   ],
   controllers: [WhatsAppController],
-  providers: [MessageProcessorService],
+  providers: [MessageProcessorService, WebhookRegistrarService],
+  exports: [WebhookRegistrarService],
 })
 export class WhatsAppModule implements OnModuleInit {
   constructor(

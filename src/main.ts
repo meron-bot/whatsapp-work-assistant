@@ -8,6 +8,7 @@ import * as express from 'express';
 import { AppModule } from './app.module';
 import { loadEnv } from './config/env';
 import { AppLogger } from './logger/logger.service';
+import { WebhookRegistrarService } from './whatsapp/webhook-registrar.service';
 
 async function bootstrap(): Promise<void> {
   // Fail fast if the environment is misconfigured.
@@ -32,6 +33,16 @@ async function bootstrap(): Promise<void> {
 
   await app.listen(config.PORT);
   logger.log(`Work assistant listening on port ${config.PORT}`);
+
+  // Self-register the WhatsApp webhook with Meta (no manual dashboard step).
+  // Runs after the server is listening so Meta's verification GET succeeds.
+  try {
+    await app.get(WebhookRegistrarService, { strict: false }).registerIfConfigured();
+  } catch (err) {
+    logger.error('Webhook auto-registration error (non-fatal)', {
+      error: (err as Error).message,
+    });
+  }
 }
 
 bootstrap().catch((err) => {
