@@ -24,18 +24,31 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
 
   /** Build a BullMQ connection options object from the configured REDIS_URL. */
   private connectionOptions(): ConnectionOptions {
-    const url = new URL(env().REDIS_URL);
+    const raw = env().REDIS_URL;
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      this.logger.error('Invalid REDIS_URL — falling back to localhost', { raw });
+      url = new URL('redis://localhost:6379');
+    }
     return {
       host: url.hostname,
       port: Number(url.port || 6379),
       username: url.username || undefined,
       password: url.password || undefined,
+      family: url.hostname.endsWith('.railway.internal') ? 6 : undefined, // Railway private net is IPv6
       maxRetriesPerRequest: null,
     };
   }
 
   onModuleInit(): void {
-    this.queue = new Queue(QUEUE_MESSAGE_PROCESSING, { connection: this.connectionOptions() });
+    // Never let queue setup crash startup; the HTTP server must come online.
+    try {
+      this.queue = new Queue(QUEUE_MESSAGE_PROCESSING, { connection: this.connectionOptions() });
+    } catch (e) {
+      this.logger.error('Queue init failed (continuing)', { error: (e as Error).message });
+    }
   }
 
   /** Registered by the consumer module after construction. */
@@ -69,6 +82,20 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
 
   async getFailedJobs(limit = 50) {
     return this.queue.getFailed(0, limit);
+  }
+
+  /** Lightweight Redis connectivity check for diagnostics. */
+  async checkRedis(): Promise<boolean> {
+    try {
+      if (!this.queue) return false;
+      const client = (await this.queue.client) as unknown as {
+        ping(): Promise<string>;
+      };
+      const pong = await client.ping();
+      return pong === 'PONG';
+    } catch {
+      return false;
+    }
   }
 
   async onModuleDestroy(): Promise<void> {

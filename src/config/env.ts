@@ -52,19 +52,23 @@ let cached: AppEnv | null = null;
 export function loadEnv(): AppEnv {
   if (cached) return cached;
 
-  // Catch unresolved Railway/Render variable references (e.g. "${{Redis.REDIS_URL}}")
-  // and report them clearly instead of crashing with a cryptic URL parse error.
-  const unresolved = Object.entries(process.env)
-    .filter(([, v]) => typeof v === 'string' && v.includes('${{'))
-    .map(([k]) => k);
+  // Neutralise unresolved Railway/Render variable references (e.g.
+  // "${{Redis.REDIS_URL}}") so the app still boots and /status can report the
+  // problem, instead of crash-looping with a cryptic URL parse error.
+  const unresolved: string[] = [];
+  for (const [k, v] of Object.entries(process.env)) {
+    if (typeof v === 'string' && v.includes('${{')) {
+      unresolved.push(k);
+      delete process.env[k];
+    }
+  }
   if (unresolved.length) {
     // eslint-disable-next-line no-console
     console.error(
-      `\n[env] Unresolved variable reference(s): ${unresolved.join(', ')}.\n` +
-        `      The referenced service does not exist or is named differently.\n` +
-        `      Check that a "Redis" service exists and the Postgres service name matches.\n`,
+      `\n[env] Unresolved variable reference(s): ${unresolved.join(', ')}. ` +
+        `The referenced service is missing or named differently ` +
+        `(e.g. add a "Redis" service). Continuing with defaults so /status works.\n`,
     );
-    throw new Error('Unresolved environment variable reference. See logs above.');
   }
 
   const parsed = envSchema.safeParse(process.env);
