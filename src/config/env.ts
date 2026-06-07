@@ -24,6 +24,7 @@ const envSchema = z.object({
   // Not strictly required to BOOT — a partially-configured deploy still starts so
   // /status can report what's missing (instead of crash-looping invisibly).
   OWNER_WHATSAPP_NUMBER: z.string().optional().default(''),
+  OWNER_NAME: z.string().default('פליי'),
   OWNER_TIMEZONE: z.string().default('Asia/Jerusalem'),
   OWNER_LANGUAGE: z.string().default('he'),
 
@@ -47,6 +48,10 @@ const envSchema = z.object({
   AI_PLANNER_PROVIDER: z.enum(['anthropic', 'openai']).default('anthropic'),
   AI_TRANSCRIPTION_PROVIDER: z.enum(['openai']).default('openai'),
   AI_VISION_PROVIDER: z.enum(['openai']).default('openai'),
+  // Cost tiering: cheap model for routine planning, heavy model for hard tasks
+  // and document drafting. Planner escalates light->heavy only when needed.
+  ANTHROPIC_MODEL_LIGHT: z.string().default('claude-haiku-4-5-20251001'),
+  ANTHROPIC_MODEL_HEAVY: z.string().default('claude-sonnet-4-6'),
 
   STORAGE_PROVIDER: z.enum(['local', 'drive', 's3']).default('local'),
   LOCAL_STORAGE_PATH: z.string().default('./storage'),

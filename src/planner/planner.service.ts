@@ -20,6 +20,25 @@ export class PlannerService {
   constructor(private readonly ai: AiService) {}
 
   async plan(ctx: PlannerContextInput): Promise<PlannerOutput> {
+    // Cost tiering: try the cheap model first; escalate to the heavy model only
+    // when the light one fails validation or returns a low-confidence result.
+    const light = await this.attempt(ctx, 'light');
+    if (light && light.confidence >= 0.6) return light;
+
+    const heavy = await this.attempt(ctx, 'heavy');
+    if (heavy) return heavy;
+
+    // If the heavy model also failed, keep any valid (low-confidence) light
+    // result; otherwise fall back to a safe clarification.
+    if (light) return light;
+    return this.fallbackClarification();
+  }
+
+  /** One planning attempt at a given cost tier. Returns null on invalid output. */
+  private async attempt(
+    ctx: PlannerContextInput,
+    tier: 'light' | 'heavy',
+  ): Promise<PlannerOutput | null> {
     const userPrompt = buildPlannerUserPrompt(ctx);
     let raw = '';
     try {
@@ -29,15 +48,15 @@ export class PlannerService {
         jsonMode: true,
         temperature: 0,
         maxTokens: 2000,
+        tier,
       });
-      const parsed = this.safeParseJson(raw);
-      return plannerOutputSchema.parse(parsed);
+      return plannerOutputSchema.parse(this.safeParseJson(raw));
     } catch (e) {
-      this.logger.error('Planner output invalid, falling back to clarification', {
+      this.logger.warn(`Planner ${tier} output invalid`, {
         error: (e as Error).message,
-        rawPreview: raw.slice(0, 300),
+        rawPreview: raw.slice(0, 200),
       });
-      return this.fallbackClarification();
+      return null;
     }
   }
 

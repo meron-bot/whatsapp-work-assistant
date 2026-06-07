@@ -27,8 +27,11 @@ export class AnthropicProvider implements TextCompletionProvider {
       ? `${options.system ?? ''}\n\nRespond with ONLY a single valid JSON object. No markdown, no prose, no code fences.`.trim()
       : options.system;
 
+    const model =
+      options.tier === 'light' ? env().ANTHROPIC_MODEL_LIGHT : env().ANTHROPIC_MODEL_HEAVY;
+
     const res = await this.client.messages.create({
-      model: 'claude-sonnet-4-6',
+      model,
       max_tokens: options.maxTokens ?? 2000,
       temperature: options.temperature ?? 0,
       system,

@@ -73,6 +73,7 @@ export interface PlannerContextInput {
   sender: string;
   timestamp: string;
   timezone: string;
+  ownerName?: string;
   recentContext?: string;
   pendingClarification?: { id: string; question: string; missingFields: unknown } | null;
   pendingApproval?: { id: string; description: string } | null;
@@ -81,6 +82,11 @@ export interface PlannerContextInput {
 
 export function buildPlannerUserPrompt(ctx: PlannerContextInput): string {
   const lines: string[] = [];
+  if (ctx.ownerName) {
+    lines.push(
+      `The owner's name is ${ctx.ownerName}. Address them by name in Hebrew when it feels natural (e.g. greetings), but stay concise.`,
+    );
+  }
   lines.push(`Owner timezone: ${ctx.timezone}`);
   lines.push(`Message timestamp: ${ctx.timestamp}`);
   if (ctx.knownProjects?.length) {

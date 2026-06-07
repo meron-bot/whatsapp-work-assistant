@@ -91,6 +91,7 @@ export class DocumentAgentService {
         jsonMode: true,
         temperature: 0,
         maxTokens: 3000,
+        tier: 'heavy', // official documents need the stronger model
       });
       const parsed = docDraftSchema.parse(JSON.parse(raw.trim()));
       content = parsed.body;

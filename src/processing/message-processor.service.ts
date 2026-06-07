@@ -94,6 +94,7 @@ export class MessageProcessorService {
         sender: row.fromNumber,
         timestamp: row.receivedAt.toISOString(),
         timezone: env().OWNER_TIMEZONE,
+        ownerName: env().OWNER_NAME,
         knownProjects: await this.knownProjects(),
         pendingApproval: pendingApproval
           ? { id: pendingApproval.id, description: pendingApproval.description }

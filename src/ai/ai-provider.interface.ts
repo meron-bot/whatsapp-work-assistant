@@ -16,6 +16,8 @@ export interface CompletionOptions {
   jsonMode?: boolean;
   maxTokens?: number;
   temperature?: number;
+  /** Cost tier: 'light' = cheap model, 'heavy' = stronger model. Default heavy. */
+  tier?: 'light' | 'heavy';
 }
 
 export interface TranscriptionResult {
