@@ -23,11 +23,14 @@ export class HealthController {
   @Get('status')
   async status() {
     let db = false;
+    let dbError: string | null = null;
     try {
       await this.prisma.$queryRaw`SELECT 1`;
       db = true;
-    } catch {
+    } catch (e) {
       db = false;
+      // Surface a short reason (no secrets) to diagnose connection issues.
+      dbError = (e as Error).message.split('\n')[0].slice(0, 200);
     }
     const queue = await this.queue.status();
 
@@ -36,6 +39,7 @@ export class HealthController {
       status: db && queue.healthy ? 'ok' : 'degraded',
       ts: new Date().toISOString(),
       subsystems: { database: db, queue: queue.driver, queueHealthy: queue.healthy },
+      databaseError: dbError,
       config: {
         DATABASE_URL: present(process.env.DATABASE_URL),
         REDIS_URL: present(process.env.REDIS_URL),
