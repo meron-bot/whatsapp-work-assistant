@@ -1,12 +1,14 @@
 import { Controller, Get } from '@nestjs/common';
 import { PrismaService } from './prisma/prisma.service';
 import { QueueService } from './queue/queue.service';
+import { WebhookRegistrarService } from './whatsapp/webhook-registrar.service';
 
 @Controller()
 export class HealthController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queue: QueueService,
+    private readonly webhookRegistrar: WebhookRegistrarService,
   ) {}
 
   /** Liveness — always 200 if the process is up (used by the platform healthcheck). */
@@ -46,6 +48,7 @@ export class HealthController {
       subsystems: { database: db, queue: queue.driver, queueHealthy: queue.healthy },
       databaseConfigured: dbConfigured,
       databaseError: dbError,
+      webhook: this.webhookRegistrar.getStatus(),
       config: {
         DATABASE_URL: present(process.env.DATABASE_URL),
         REDIS_URL: present(process.env.REDIS_URL),
