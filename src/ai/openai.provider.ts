@@ -58,15 +58,19 @@ export class OpenAIProvider
     // Call the REST endpoint directly with native fetch + FormData. The bundled
     // SDK's multipart upload path throws "Connection error" on Node 20, while a
     // plain native multipart POST to the same host works reliably.
+    // tsconfig sets no explicit `lib`, so both the DOM lib and @types/node declare
+    // FormData/Blob globally; the two declarations don't unify, so `tsc --noEmit`
+    // rejects passing one where the other is expected. Cast at the assignment
+    // points only — no runtime effect (Node's undici provides all three at runtime).
     const form = new FormData();
-    form.append('file', new Blob([audio], { type: mimeType }), `audio.${ext}`);
+    form.append('file', new Blob([audio], { type: mimeType }) as any, `audio.${ext}`);
     form.append('model', 'whisper-1');
     form.append('response_format', 'verbose_json');
 
     const httpRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${env().OPENAI_API_KEY}` },
-      body: form,
+      body: form as any,
     });
     if (!httpRes.ok) {
       const body = await httpRes.text();
