@@ -80,6 +80,9 @@ export class MediaService {
       classification: null,
       degradedNote: null,
     };
+    // Diagnostic reason persisted to MediaAsset.processingError (visible at
+    // /admin/media) whenever processing degrades — never shown to the owner.
+    let processingError: string | null = null;
 
     // 2. Type-specific AI processing. Failures degrade gracefully.
     try {
@@ -94,6 +97,7 @@ export class MediaService {
           result.degradedNote = tr.text
             ? `שמעתי בערך: "${tr.text}". לא בטוח שהבנתי נכון. אפשר לאשר או לכתוב לי?`
             : 'לא הצלחתי להבין את ההקלטה. אפשר לשלוח שוב או לכתוב לי?';
+          processingError = `transcription unusable (bytes=${buffer.length}, mime=${mimeType}, confidence=${tr.confidence ?? 'null'}, textLen=${tr.text?.length ?? 0})`;
         }
       } else if (msg.type === 'image') {
         const vision = await this.ai.describeImage(buffer, mimeType);
@@ -105,7 +109,8 @@ export class MediaService {
         result.aiSummary = `Document received: ${msg.filename ?? filename}`;
       }
     } catch (e) {
-      this.logger.error('Media AI processing failed', { error: (e as Error).message });
+      processingError = (e as Error).message.slice(0, 500);
+      this.logger.error('Media AI processing failed', { error: processingError });
       result.transcriptReliable = false;
       result.degradedNote =
         'הקובץ נשמר, אבל לא הצלחתי לעבד אותו. אפשר לשלוח שוב או לכתוב לי את המשימה.';
@@ -118,6 +123,7 @@ export class MediaService {
         extractedText: result.extractedText,
         aiSummary: result.aiSummary,
         classification: result.classification,
+        processingError,
       },
     });
 

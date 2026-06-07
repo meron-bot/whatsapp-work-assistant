@@ -132,6 +132,7 @@ model MediaAsset {
   extractedText     String?
   aiSummary         String?
   classification    String?
+  processingError   String?
   projectId         String?
   createdAt         DateTime @default(now())
 
