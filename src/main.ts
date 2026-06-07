@@ -31,8 +31,9 @@ async function bootstrap(): Promise<void> {
     }),
   );
 
-  await app.listen(config.PORT);
-  logger.log(`Work assistant listening on port ${config.PORT}`);
+  // Bind explicitly to 0.0.0.0 so the platform proxy/healthcheck can reach us.
+  await app.listen(config.PORT, '0.0.0.0');
+  logger.log(`Work assistant listening on 0.0.0.0:${config.PORT}`);
 
   // Self-register the WhatsApp webhook with Meta (no manual dashboard step).
   // Runs after the server is listening so Meta's verification GET succeeds.

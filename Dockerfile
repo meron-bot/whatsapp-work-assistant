@@ -34,7 +34,9 @@ RUN chmod +x ./docker/entrypoint.sh
 
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD wget -qO- http://localhost:3000/health || exit 1
+# Note: no Docker HEALTHCHECK here on purpose — the platform (Railway/Render)
+# runs its own healthcheck against /health on the routed PORT. A hardcoded
+# in-container healthcheck would race the port and can wrongly mark the
+# container unhealthy.
 
 ENTRYPOINT ["./docker/entrypoint.sh"]

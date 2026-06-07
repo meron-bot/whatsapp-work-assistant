@@ -6,6 +6,7 @@ import { ApprovalService } from '../approvals/approval.service';
 import { ClarificationService } from '../clarifications/clarification.service';
 import { DocumentAgentService, DocumentType } from '../documents/document-agent.service';
 import { GoogleTasksService } from '../google/google-tasks.service';
+import { GoogleCalendarService } from '../google/google-calendar.service';
 import { GoogleAuthService } from '../google/google-auth.service';
 import { OpenLoopService } from '../open-loops/open-loop.service';
 import { PlannerAction, PlannerOutput } from '../planner/planner.schema';
@@ -21,10 +22,19 @@ export interface ExecuteContext {
 export type ExecutionResult =
   | { type: 'task'; id: string }
   | { type: 'reminder'; id: string }
+  | { type: 'calendar'; id: string }
   | { type: 'document'; id: string; missingFacts: string[] }
   | { type: 'clarification'; id: string }
   | { type: 'approval'; id: string }
   | { type: 'ignored'; reason: string };
+
+/** Parse an ISO datetime string; returns null for missing or unparseable values
+ *  (anti-hallucination: never persist an Invalid Date or a guessed time). */
+function parseIso(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
 
 /**
  * Receives validated planner actions and executes them according to the safety
@@ -44,6 +54,7 @@ export class ActionExecutorService {
     private readonly openLoops: OpenLoopService,
     private readonly documents: DocumentAgentService,
     private readonly tasks: GoogleTasksService,
+    private readonly calendar: GoogleCalendarService,
     private readonly googleAuth: GoogleAuthService,
     private readonly audit: AuditService,
   ) {}
@@ -123,6 +134,8 @@ export class ActionExecutorService {
         return this.createTask(action, ctx);
       case 'create_reminder':
         return this.createReminder(action, ctx);
+      case 'create_calendar_event':
+        return this.createCalendarEvent(action, ctx);
       case 'draft_document':
         return this.createDocumentDraft(action, ctx);
       case 'save_file':
@@ -138,12 +151,13 @@ export class ActionExecutorService {
   }
 
   private async createTask(action: PlannerAction, ctx: ExecuteContext): Promise<ExecutionResult> {
+    const dueDate = parseIso(action.dueDate);
     const task = await this.prisma.task.create({
       data: {
         title: action.title,
         description: action.description,
         priority: action.priority ?? 'medium',
-        dueDate: action.dueDate ? new Date(action.dueDate) : null,
+        dueDate,
         sourceMessageId: ctx.sourceMessageId,
       },
     });
@@ -166,7 +180,7 @@ export class ActionExecutorService {
       title: action.title,
       status: 'open',
       priority: action.priority ?? 'medium',
-      dueDate: action.dueDate ? new Date(action.dueDate) : null,
+      dueDate,
       linkedTaskId: task.id,
       sourceMessageId: ctx.sourceMessageId,
     });
@@ -181,11 +195,15 @@ export class ActionExecutorService {
     action: PlannerAction,
     ctx: ExecuteContext,
   ): Promise<ExecutionResult> {
-    const when = action.dueDate ?? action.startTime;
+    const when = parseIso(action.dueDate ?? action.startTime);
+    if (!when) {
+      // No valid time -> don't guess; ask for it.
+      return this.askForMissing(action, ctx, 'מתי להזכיר לך? (תאריך ושעה)');
+    }
     const reminder = await this.reminders.create({
       title: action.title,
       description: action.description,
-      remindAt: new Date(when as string),
+      remindAt: when,
       sourceMessageId: ctx.sourceMessageId,
     });
     await this.audit.success('reminder.created', { reminderId: reminder.id }, {
@@ -193,6 +211,84 @@ export class ActionExecutorService {
       entityId: reminder.id,
     });
     return { type: 'reminder', id: reminder.id };
+  }
+
+  private async createCalendarEvent(
+    action: PlannerAction,
+    ctx: ExecuteContext,
+  ): Promise<ExecutionResult> {
+    const start = parseIso(action.startTime);
+    if (!start) {
+      return this.askForMissing(action, ctx, 'באיזה תאריך ושעה לקבוע את הפגישה?');
+    }
+    // Default to a 60-minute event when no explicit end time is given.
+    const end = parseIso(action.endTime) ?? new Date(start.getTime() + 60 * 60 * 1000);
+
+    const event = await this.prisma.calendarEvent.create({
+      data: {
+        title: action.title,
+        description: action.description,
+        startTime: start,
+        endTime: end,
+        participants: action.participants as unknown as Prisma.InputJsonValue,
+        status: 'created',
+        sourceMessageId: ctx.sourceMessageId,
+      },
+    });
+
+    // Best-effort sync to Google Calendar (never blocks the local record).
+    if (await this.googleAuth.isAuthorized()) {
+      try {
+        const { id: googleEventId } = await this.calendar.createEvent({
+          title: action.title,
+          description: action.description,
+          startTime: start.toISOString(),
+          endTime: end.toISOString(),
+          attendees: action.participants,
+        });
+        await this.prisma.calendarEvent.update({
+          where: { id: event.id },
+          data: { googleEventId },
+        });
+      } catch (e) {
+        this.logger.warn('Google Calendar sync failed', { error: (e as Error).message });
+      }
+    }
+
+    await this.openLoops.create({
+      title: action.title,
+      status: 'open',
+      dueDate: start,
+      linkedEventId: event.id,
+      sourceMessageId: ctx.sourceMessageId,
+    });
+    await this.audit.success('calendar_event.created', { eventId: event.id }, {
+      entityType: 'CalendarEvent',
+      entityId: event.id,
+    });
+    return { type: 'calendar', id: event.id };
+  }
+
+  /** Fall back to a clarification when a required value is missing/unparseable. */
+  private async askForMissing(
+    action: PlannerAction,
+    ctx: ExecuteContext,
+    question: string,
+  ): Promise<ExecutionResult> {
+    const clarification = await this.clarifications.create({
+      question,
+      reason: 'missing or unparseable required value',
+      missingFields: action.missingFields,
+      sourceMessageId: ctx.sourceMessageId,
+      plannerContext: { action } as Prisma.InputJsonValue,
+    });
+    await this.openLoops.create({
+      title: action.title,
+      description: 'Waiting for clarification',
+      status: 'waiting_for_owner',
+      sourceMessageId: ctx.sourceMessageId,
+    });
+    return { type: 'clarification', id: clarification.id };
   }
 
   private async createDocumentDraft(

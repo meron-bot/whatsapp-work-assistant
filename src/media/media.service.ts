@@ -10,6 +10,9 @@ export interface ProcessedMedia {
   mediaAssetId: string;
   transcript: string | null;
   transcriptConfidence: number | null;
+  /** False when the transcript is missing or low-confidence — callers must NOT
+   *  act on it (ask the owner to confirm/resend instead). */
+  transcriptReliable: boolean;
   extractedText: string | null;
   aiSummary: string | null;
   classification: string | null;
@@ -71,6 +74,7 @@ export class MediaService {
       mediaAssetId: asset.id,
       transcript: null,
       transcriptConfidence: null,
+      transcriptReliable: true,
       extractedText: null,
       aiSummary: null,
       classification: null,
@@ -84,9 +88,12 @@ export class MediaService {
         result.transcript = tr.text || null;
         result.transcriptConfidence = tr.confidence;
         if (!tr.text || (tr.confidence !== null && tr.confidence < 0.5)) {
+          // Low-confidence/empty transcript: flag as unreliable so the planner
+          // never acts on a guessed transcription.
+          result.transcriptReliable = false;
           result.degradedNote = tr.text
-            ? `שמעתי בערך: "${tr.text}". לא בטוח שהבנתי נכון.`
-            : 'לא הצלחתי להבין את ההקלטה.';
+            ? `שמעתי בערך: "${tr.text}". לא בטוח שהבנתי נכון. אפשר לאשר או לכתוב לי?`
+            : 'לא הצלחתי להבין את ההקלטה. אפשר לשלוח שוב או לכתוב לי?';
         }
       } else if (msg.type === 'image') {
         const vision = await this.ai.describeImage(buffer, mimeType);
@@ -99,6 +106,7 @@ export class MediaService {
       }
     } catch (e) {
       this.logger.error('Media AI processing failed', { error: (e as Error).message });
+      result.transcriptReliable = false;
       result.degradedNote =
         'הקובץ נשמר, אבל לא הצלחתי לעבד אותו. אפשר לשלוח שוב או לכתוב לי את המשימה.';
     }

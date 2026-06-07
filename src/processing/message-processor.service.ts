@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { ActionExecutorService } from '../actions/action-executor.service';
+import { ActionExecutorService, ExecutionResult } from '../actions/action-executor.service';
 import { ApprovalService } from '../approvals/approval.service';
 import { AuditService } from '../audit/audit.service';
 import { ClarificationService } from '../clarifications/clarification.service';
@@ -8,7 +8,7 @@ import { env } from '../config/env';
 import { AppLogger } from '../logger/logger.service';
 import { MediaService } from '../media/media.service';
 import { PlannerService } from '../planner/planner.service';
-import { PlannerAction, plannerActionSchema } from '../planner/planner.schema';
+import { PlannerAction, PlannerOutput, plannerActionSchema } from '../planner/planner.schema';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { NormalizedIncomingMessage } from '../whatsapp/whatsapp.types';
@@ -46,39 +46,47 @@ export class MessageProcessorService {
       this.logger.warn('Message row not found', { whatsappMessageId });
       return;
     }
-    if (row.status === 'processed') {
-      this.logger.debug('Message already processed (idempotent skip)', { whatsappMessageId });
-      return;
-    }
 
-    await this.prisma.whatsAppMessage.update({
-      where: { id: row.id },
+    // Atomic claim (compare-and-swap): only one worker may move the message into
+    // 'processing'. Prevents double-execution on webhook retries / job re-delivery.
+    const claim = await this.prisma.whatsAppMessage.updateMany({
+      where: { id: row.id, status: { in: ['received', 'queued', 'failed'] } },
       data: { status: 'processing' },
     });
+    if (claim.count === 0) {
+      this.logger.debug('Message already claimed/processed (idempotent skip)', {
+        whatsappMessageId,
+        status: row.status,
+      });
+      return;
+    }
 
     const msg = this.toNormalized(row.rawPayload, row);
 
     try {
-      // 1. Resolve content (media / voice).
+      // 1. Resolve content (media / voice). Unreliable transcripts are NOT used.
       const { text, transcript, mediaSummary, degradedNote } = await this.resolveContent(
         msg,
         row.id,
       );
-
       if (degradedNote) {
         await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, degradedNote);
       }
 
       const ownerText = [text, transcript].filter(Boolean).join(' ').trim() || null;
 
-      // 2. Route to a pending item first.
-      const handled = await this.tryHandlePending(ownerText, mediaSummary, row.id);
-      if (handled) {
+      // Nothing usable (e.g. unintelligible voice note) — the degraded note has
+      // already asked the owner to resend; do not invent an action.
+      if (!ownerText && !mediaSummary) {
         await this.finalize(row.id, 'processed');
         return;
       }
 
-      // 3. Fresh planning.
+      // 2. Plan ONCE, giving the planner any pending approval/clarification so it
+      // can tell us whether this message answers them.
+      const pendingApproval = await this.approvals.findOldestPending();
+      const pendingClarification = await this.clarifications.findOldestPending();
+
       const plan = await this.planner.plan({
         text,
         transcript,
@@ -87,32 +95,68 @@ export class MessageProcessorService {
         timestamp: row.receivedAt.toISOString(),
         timezone: env().OWNER_TIMEZONE,
         knownProjects: await this.knownProjects(),
+        pendingApproval: pendingApproval
+          ? { id: pendingApproval.id, description: pendingApproval.description }
+          : null,
+        pendingClarification: pendingClarification
+          ? {
+              id: pendingClarification.id,
+              question: pendingClarification.question,
+              missingFields: pendingClarification.missingFields,
+            }
+          : null,
       });
 
-      await this.audit.success('planner.plan', { summary: plan.summary, confidence: plan.confidence }, {
-        entityType: 'WhatsAppMessage',
-        entityId: row.id,
-      });
+      await this.audit.success(
+        'planner.plan',
+        { summary: plan.summary, confidence: plan.confidence },
+        { entityType: 'WhatsAppMessage', entityId: row.id },
+      );
 
-      if (plan.needsClarification && plan.clarificationQuestion) {
-        await this.clarifications.create({
-          question: plan.clarificationQuestion,
-          reason: plan.missingInformation.map((m) => m.field).join(', ') || 'missing information',
-          missingFields: plan.missingInformation,
-          sourceMessageId: row.id,
-          plannerContext: plan as unknown as Prisma.InputJsonValue,
-        });
+      // 3a. Is this a response to a pending approval?
+      if (pendingApproval && ownerText) {
+        const decision = this.approvals.classifyResponse(ownerText);
+        if (decision === 'approved') {
+          await this.approvals.markApproved(pendingApproval.id, row.id);
+          const result = await this.executeApprovedAction(pendingApproval.id);
+          const reply = this.approvedReply(result);
+          if (reply) await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, reply);
+          await this.finalize(row.id, 'processed');
+          return;
+        }
+        if (decision === 'rejected') {
+          await this.approvals.markRejected(pendingApproval.id, row.id);
+          await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, 'בוטל. לא בוצעה הפעולה.');
+          await this.finalize(row.id, 'processed');
+          return;
+        }
+        // Ambiguous words. Only treat as an approval reply if the planner thinks
+        // it is one; otherwise fall through and handle it as a NEW request so the
+        // message is never dropped (the approval stays pending).
+        if (plan.isAnswerToPendingApproval) {
+          await this.whatsapp.sendText(
+            env().OWNER_WHATSAPP_NUMBER,
+            "לא בטוח שהבנתי אם לאשר או לבטל. לענות בבקשה: 'אשר' או 'בטל'.",
+          );
+          await this.finalize(row.id, 'processed');
+          return;
+        }
+      }
+
+      // 3b. Is this an answer to a pending clarification?
+      if (pendingClarification && plan.isAnswerToPendingClarification) {
+        await this.clarifications.markAnswered(
+          pendingClarification.id,
+          ownerText ?? mediaSummary ?? '',
+          row.id,
+        );
+        await this.runPlan(plan, row.id);
         await this.finalize(row.id, 'processed');
         return;
       }
 
-      await this.executor.executePlan({ sourceMessageId: row.id, plannerOutput: plan });
-
-      // 4. Reply to the owner (planner-authored Hebrew reply).
-      if (plan.replyToUser) {
-        await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, plan.replyToUser);
-      }
-
+      // 3c. Fresh request.
+      await this.runPlan(plan, row.id);
       await this.finalize(row.id, 'processed');
     } catch (e) {
       this.logger.error('Processing failed', { whatsappMessageId, error: (e as Error).message });
@@ -124,91 +168,49 @@ export class MessageProcessorService {
     }
   }
 
-  // --- pending-item routing ---
-
-  private async tryHandlePending(
-    ownerText: string | null,
-    mediaSummary: string | null,
-    sourceRowId: string,
-  ): Promise<boolean> {
-    if (!ownerText && !mediaSummary) return false;
-
-    // Approvals take priority — a high-risk action is blocked on it.
-    const approval = await this.approvals.findOldestPending();
-    if (approval && ownerText) {
-      const decision = this.approvals.classifyResponse(ownerText);
-      if (decision === 'approved') {
-        await this.approvals.markApproved(approval.id, sourceRowId);
-        await this.executeApprovedAction(approval.id);
-        await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, 'אושר ובוצע.');
-        return true;
-      }
-      if (decision === 'rejected') {
-        await this.approvals.markRejected(approval.id, sourceRowId);
-        await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, 'בוטל. לא בוצעה הפעולה.');
-        return true;
-      }
-      // ambiguous -> ask again, keep approval open
-      await this.whatsapp.sendText(
-        env().OWNER_WHATSAPP_NUMBER,
-        "לא בטוח שהבנתי אם לאשר או לבטל. לענות בבקשה: 'אשר' או 'בטל'.",
-      );
-      return true;
-    }
-
-    const clarification = await this.clarifications.findOldestPending();
-    if (clarification && (ownerText || mediaSummary)) {
-      const answer = ownerText ?? mediaSummary ?? '';
-      await this.clarifications.markAnswered(clarification.id, answer, sourceRowId);
-
-      // Re-plan using the original context + the new answer so the previously
-      // blocked action can proceed.
-      const plan = await this.planner.plan({
-        text: answer,
-        transcript: null,
-        mediaSummary,
-        sender: env().OWNER_WHATSAPP_NUMBER,
-        timestamp: new Date().toISOString(),
-        timezone: env().OWNER_TIMEZONE,
-        knownProjects: await this.knownProjects(),
-        pendingClarification: {
-          id: clarification.id,
-          question: clarification.question,
-          missingFields: clarification.missingFields,
-        },
+  /**
+   * Execute a (non-approval) plan and reply truthfully: if the plan needs
+   * clarification or any action was gated to approval/clarification, those paths
+   * send their own message — we do NOT also send an optimistic "done" reply.
+   */
+  private async runPlan(plan: PlannerOutput, sourceRowId: string): Promise<void> {
+    if (plan.needsClarification && plan.clarificationQuestion) {
+      await this.clarifications.create({
+        question: plan.clarificationQuestion,
+        reason: plan.missingInformation.map((m) => m.field).join(', ') || 'missing information',
+        missingFields: plan.missingInformation,
+        sourceMessageId: sourceRowId,
+        plannerContext: plan as unknown as Prisma.InputJsonValue,
       });
-
-      if (plan.needsClarification && plan.clarificationQuestion) {
-        await this.clarifications.create({
-          question: plan.clarificationQuestion,
-          reason: 'still missing information',
-          missingFields: plan.missingInformation,
-          sourceMessageId: sourceRowId,
-        });
-        return true;
-      }
-
-      await this.executor.executePlan({ sourceMessageId: sourceRowId, plannerOutput: plan });
-      if (plan.replyToUser) {
-        await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, plan.replyToUser);
-      }
-      return true;
+      return;
     }
 
-    return false;
+    const results = await this.executor.executePlan({
+      sourceMessageId: sourceRowId,
+      plannerOutput: plan,
+    });
+
+    // If anything became a pending approval/clarification, that path already
+    // messaged the owner — don't send a contradicting "done" reply.
+    const gated = results.some((r) => r.type === 'approval' || r.type === 'clarification');
+    if (!gated && plan.replyToUser) {
+      await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, plan.replyToUser);
+    }
   }
 
-  private async executeApprovedAction(approvalId: string): Promise<void> {
+  private async executeApprovedAction(approvalId: string): Promise<ExecutionResult | null> {
     const approval = await this.prisma.approval.findUnique({ where: { id: approvalId } });
-    if (!approval) return;
+    if (!approval) return null;
     const payload = approval.proposedPayload as { action?: unknown };
     const parsed = plannerActionSchema.safeParse(payload.action);
     if (!parsed.success) {
       this.logger.warn('Approved payload could not be parsed', { approvalId });
-      return;
+      return null;
     }
-    const action: PlannerAction = { ...parsed.data, requiresApproval: false, participants: [] };
-    await this.executor.runLowRisk(action, {
+    // The approval has been granted, so the action may now run its real side
+    // effect — but keep participants so e.g. calendar invites are created.
+    const action: PlannerAction = { ...parsed.data, requiresApproval: false };
+    return this.executor.runLowRisk(action, {
       sourceMessageId: approval.sourceMessageId ?? '',
       plannerOutput: {
         summary: '',
@@ -227,6 +229,24 @@ export class MessageProcessorService {
     });
   }
 
+  /** Truthful confirmation for an approved action's actual outcome. */
+  private approvedReply(result: ExecutionResult | null): string {
+    switch (result?.type) {
+      case 'task':
+        return 'אושר. יצרתי את המשימה.';
+      case 'reminder':
+        return 'אושר. קבעתי תזכורת.';
+      case 'calendar':
+        return 'אושר. יצרתי את האירוע ביומן.';
+      case 'document':
+        return 'אושר. הכנתי את הטיוטה.';
+      case 'clarification':
+        return ''; // a clarification question was already sent
+      default:
+        return 'אישרת, אבל לא הצלחתי להשלים את הפעולה. בדוק את הלוג או נסה שוב.';
+    }
+  }
+
   // --- helpers ---
 
   private async resolveContent(msg: NormalizedIncomingMessage, rowId: string) {
@@ -238,7 +258,9 @@ export class MessageProcessorService {
     if (msg.mediaId) {
       const processed = await this.media.ingest(msg, rowId);
       if (processed) {
-        transcript = processed.transcript;
+        // Only act on a transcript we trust; unreliable ones become a degraded
+        // note asking the owner to confirm/resend (handled by the caller).
+        transcript = processed.transcriptReliable ? processed.transcript : null;
         degradedNote = processed.degradedNote;
         if (processed.aiSummary || processed.extractedText || processed.classification) {
           mediaSummary = [

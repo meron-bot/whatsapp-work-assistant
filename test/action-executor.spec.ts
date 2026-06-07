@@ -58,6 +58,7 @@ describe('ActionExecutorService', () => {
       openLoops: { create: jest.fn().mockResolvedValue({ id: 'l1' }) },
       documents: { draft: jest.fn() },
       tasks: { createTask: jest.fn() },
+      calendar: { createEvent: jest.fn() },
       googleAuth: { isAuthorized: jest.fn().mockResolvedValue(false) },
       audit: {
         success: jest.fn().mockResolvedValue(undefined),
@@ -73,6 +74,7 @@ describe('ActionExecutorService', () => {
       deps.openLoops,
       deps.documents,
       deps.tasks,
+      deps.calendar,
       deps.googleAuth,
       deps.audit,
     );

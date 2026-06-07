@@ -12,13 +12,15 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
 
-  OWNER_WHATSAPP_NUMBER: z.string().min(5),
+  // Not strictly required to BOOT — a partially-configured deploy still starts so
+  // /status can report what's missing (instead of crash-looping invisibly).
+  OWNER_WHATSAPP_NUMBER: z.string().optional().default(''),
   OWNER_TIMEZONE: z.string().default('Asia/Jerusalem'),
   OWNER_LANGUAGE: z.string().default('he'),
 
-  WHATSAPP_VERIFY_TOKEN: z.string().min(1),
-  WHATSAPP_ACCESS_TOKEN: z.string().min(1),
-  WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
+  WHATSAPP_VERIFY_TOKEN: z.string().optional().default(''),
+  WHATSAPP_ACCESS_TOKEN: z.string().optional().default(''),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().optional().default(''),
   WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().optional().default(''),
   META_APP_SECRET: z.string().optional().default(''),
   META_APP_ID: z.string().optional().default(''),

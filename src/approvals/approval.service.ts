@@ -5,11 +5,15 @@ import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalView, WhatsAppService } from '../whatsapp/whatsapp.service';
 
-const APPROVE_WORDS = ['אשר', 'מאשר', 'כן תאשר', 'שלח', 'כן', 'תבצע', 'אישור'];
-const REJECT_WORDS = ['אל תשלח', 'לא מאשר', 'בטל', 'עצור', 'לא'];
-// Unambiguous rejection phrases that win even if they contain an approve substring
-// (e.g. "לא מאשר" contains "מאשר").
-const EXPLICIT_REJECT = ['אל תשלח', 'לא מאשר', 'בטל', 'עצור'];
+// Whole-word tokens (matched on word boundaries, NOT substrings — substring
+// matching on 2-letter Hebrew tokens like כן/לא is dangerous for an approve/
+// reject gate, e.g. "לכן"/"תשלח" must NOT count as כן/שלח).
+const APPROVE_TOKENS = ['אשר', 'מאשר', 'שלח', 'כן', 'תבצע', 'אישור', 'מאשרת', 'אשרי'];
+const REJECT_TOKENS = ['לא', 'בטל', 'עצור', 'בטלי'];
+// Multi-word phrases checked as phrases; explicit rejections win over any
+// approve token they may contain (e.g. "לא מאשר" contains "מאשר").
+const EXPLICIT_REJECT_PHRASES = ['אל תשלח', 'לא מאשר', 'אל תבצע', 'לא לשלוח'];
+const APPROVE_PHRASES = ['כן תאשר', 'כן לאשר', 'אפשר לשלוח'];
 
 export type ApprovalDecision = 'approved' | 'rejected' | 'ambiguous';
 
@@ -75,11 +79,19 @@ export class ApprovalService {
   /** Classify a free-text/voice answer as approve / reject / ambiguous. */
   classifyResponse(text: string): ApprovalDecision {
     const normalized = text.trim().toLowerCase();
-    if (EXPLICIT_REJECT.some((w) => normalized.includes(w.toLowerCase()))) return 'rejected';
-    const hasApprove = APPROVE_WORDS.some((w) => normalized.includes(w.toLowerCase()));
-    const hasReject = REJECT_WORDS.some((w) => normalized.includes(w.toLowerCase()));
+    // Tokenize on whitespace/punctuation so we match whole words only.
+    const tokens = normalized.split(/[\s,.!?؛;:()"'־–—-]+/).filter(Boolean);
+
+    // Explicit rejection phrases win outright.
+    if (EXPLICIT_REJECT_PHRASES.some((p) => normalized.includes(p))) return 'rejected';
+    const hasApprovePhrase = APPROVE_PHRASES.some((p) => normalized.includes(p));
+
+    const hasApprove = hasApprovePhrase || tokens.some((t) => APPROVE_TOKENS.includes(t));
+    const hasReject = tokens.some((t) => REJECT_TOKENS.includes(t));
+
     if (hasApprove && !hasReject) return 'approved';
     if (hasReject && !hasApprove) return 'rejected';
+    // Anything mixed or undecided fails safe to ambiguous (never auto-approves).
     return 'ambiguous';
   }
 
