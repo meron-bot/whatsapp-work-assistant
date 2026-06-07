@@ -41,6 +41,53 @@ export const missingInformationSchema = z.object({
   importance: z.enum(['low', 'medium', 'high']),
 });
 
+/**
+ * Sub-agent / tool the planner can invoke to resolve missing context BEFORE
+ * asking the owner. The processor runs each request, feeds the findings back,
+ * and re-plans. This is the heart of "solve before you ask".
+ *   - calendar_freebusy: free/busy windows for a day or range (query = ISO date,
+ *     "start/end" ISO range, or empty for the next 7 days).
+ *   - calendar_agenda: the actual events for a day/range (same query format).
+ *   - gmail_find_contact: find a person's email address (query = their name).
+ *   - gmail_search: search the owner's mail for facts (query = Gmail search text).
+ *   - web_research: research a question on the web (query = the question).
+ */
+export const toolRequestEnum = z.enum([
+  'calendar_freebusy',
+  'calendar_agenda',
+  'gmail_find_contact',
+  'gmail_search',
+  'web_research',
+]);
+
+export const toolRequestSchema = z.object({
+  tool: toolRequestEnum,
+  query: z.string(),
+  reason: z.string().nullable().default(null),
+});
+
+export const memoryTypeEnum = z.enum([
+  'preference',
+  'contact',
+  'project_fact',
+  'pattern',
+  'correction',
+  'glossary',
+]);
+
+/**
+ * A durable fact the planner learned from this message (an explicit preference,
+ * a correction, a new contact/project detail). Persisted to the learning layer
+ * and injected into future prompts. Only emit facts that are clearly stated and
+ * worth remembering — never guesses.
+ */
+export const memoryWriteSchema = z.object({
+  type: memoryTypeEnum,
+  subject: z.string().nullable().default(null),
+  content: z.string(),
+  confidence: z.number().min(0).max(1).default(0.7),
+});
+
 export const plannerOutputSchema = z.object({
   summary: z.string(),
   confidence: z.number().min(0).max(1),
@@ -52,10 +99,20 @@ export const plannerOutputSchema = z.object({
   missingInformation: z.array(missingInformationSchema).default([]),
   needsClarification: z.boolean().default(false),
   clarificationQuestion: z.string().nullable().default(null),
+  // Resolve-before-ask: tools/sub-agents to run before finalizing. When this is
+  // non-empty the processor runs them, feeds findings back, and re-plans.
+  toolRequests: z.array(toolRequestSchema).default([]),
+  // Reasonable assumptions the planner made and is stating to the owner (e.g.
+  // "assumed 60 min", "assumed 09:00"). Surfaced so the owner can correct.
+  assumptions: z.array(z.string()).default([]),
   actions: z.array(plannerActionSchema).default([]),
+  memoryWrites: z.array(memoryWriteSchema).default([]),
   replyToUser: z.string(),
 });
 
 export type PlannerAction = z.infer<typeof plannerActionSchema>;
 export type PlannerOutput = z.infer<typeof plannerOutputSchema>;
 export type ActionType = z.infer<typeof actionTypeEnum>;
+export type MemoryWrite = z.infer<typeof memoryWriteSchema>;
+export type ToolRequest = z.infer<typeof toolRequestSchema>;
+export type ToolName = z.infer<typeof toolRequestEnum>;

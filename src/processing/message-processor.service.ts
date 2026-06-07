@@ -6,7 +6,10 @@ import { AuditService } from '../audit/audit.service';
 import { ClarificationService } from '../clarifications/clarification.service';
 import { env } from '../config/env';
 import { AppLogger } from '../logger/logger.service';
+import { LearnedFactService } from '../memory/learned-fact.service';
 import { MediaService } from '../media/media.service';
+import { OrchestrationService } from '../orchestration/orchestration.service';
+import { PlannerContextInput } from '../planner/planner.prompt';
 import { PlannerService } from '../planner/planner.service';
 import { PlannerAction, PlannerOutput, plannerActionSchema } from '../planner/planner.schema';
 import { PrismaService } from '../prisma/prisma.service';
@@ -23,6 +26,11 @@ import { NormalizedIncomingMessage } from '../whatsapp/whatsapp.types';
  *   3. Otherwise plan a fresh action and execute under policy.
  *   4. Always reply to the owner. Never invent. Never drop actionable input.
  */
+/** Max resolve-before-ask rounds: each round runs the planner's requested tools
+ *  and re-plans. Bounds cost/latency while letting the assistant chain a couple
+ *  of lookups (e.g. find a contact, then check availability). */
+const MAX_RESOLUTION_ROUNDS = 2;
+
 @Injectable()
 export class MessageProcessorService {
   private readonly logger = new AppLogger('MessageProcessor');
@@ -36,6 +44,8 @@ export class MessageProcessorService {
     private readonly clarifications: ClarificationService,
     private readonly approvals: ApprovalService,
     private readonly audit: AuditService,
+    private readonly memory: LearnedFactService,
+    private readonly orchestrator: OrchestrationService,
   ) {}
 
   async process(whatsappMessageId: string): Promise<void> {
@@ -82,12 +92,20 @@ export class MessageProcessorService {
         return;
       }
 
+      // 1b. Deterministic memory commands ("what do you remember" / "forget …").
+      // Handled WITHOUT any AI call — pure cost saving.
+      if (ownerText && (await this.handleMemoryCommand(ownerText))) {
+        await this.finalize(row.id, 'processed');
+        return;
+      }
+
       // 2. Plan ONCE, giving the planner any pending approval/clarification so it
       // can tell us whether this message answers them.
       const pendingApproval = await this.approvals.findOldestPending();
       const pendingClarification = await this.clarifications.findOldestPending();
+      const memories = await this.memory.retrieveForPrompt(ownerText ?? mediaSummary ?? '');
 
-      const plan = await this.planner.plan({
+      const plannerCtx: PlannerContextInput = {
         text,
         transcript,
         mediaSummary,
@@ -96,6 +114,7 @@ export class MessageProcessorService {
         timezone: env().OWNER_TIMEZONE,
         ownerName: env().OWNER_NAME,
         knownProjects: await this.knownProjects(),
+        memories,
         pendingApproval: pendingApproval
           ? { id: pendingApproval.id, description: pendingApproval.description }
           : null,
@@ -106,13 +125,30 @@ export class MessageProcessorService {
               missingFields: pendingClarification.missingFields,
             }
           : null,
-      });
+      };
+
+      // Plan once, then run the resolve-before-ask loop: if the planner asked
+      // for tools/sub-agents (calendar, Gmail, web), run them, feed the findings
+      // back, and re-plan — so it resolves context on its own before asking.
+      let plan = await this.planner.plan(plannerCtx);
+      const findings: string[] = [];
+      for (let round = 0; plan.toolRequests.length && round < MAX_RESOLUTION_ROUNDS; round++) {
+        const newFindings = await this.orchestrator.resolve(plan.toolRequests, row.id);
+        findings.push(...newFindings);
+        plan = await this.planner.plan({ ...plannerCtx, toolFindings: [...findings] });
+      }
 
       await this.audit.success(
         'planner.plan',
         { summary: plan.summary, confidence: plan.confidence },
         { entityType: 'WhatsAppMessage', entityId: row.id },
       );
+
+      // Persist anything the planner learned (zero extra AI cost — by-product of
+      // the call above). Runs regardless of how the message is routed below.
+      if (plan.memoryWrites.length) {
+        await this.memory.applyWrites(plan.memoryWrites, row.id);
+      }
 
       // 3a. Is this a response to a pending approval?
       if (pendingApproval && ownerText) {
@@ -224,10 +260,44 @@ export class MessageProcessorService {
         missingInformation: [],
         needsClarification: false,
         clarificationQuestion: null,
+        toolRequests: [],
+        assumptions: [],
         actions: [action],
+        memoryWrites: [],
         replyToUser: '',
       },
     });
+  }
+
+  /**
+   * Deterministic owner commands for the learning layer — handled without any AI
+   * call. Returns true if the message was a memory command and has been handled.
+   *   • recall: "מה אתה זוכר", "מה אתה יודע עליי", "מה למדת"
+   *   • forget: "תשכח ...", "שכח ..."
+   */
+  private async handleMemoryCommand(ownerText: string): Promise<boolean> {
+    const t = ownerText.trim();
+
+    if (/^(מה אתה זוכר|מה אתה יודע|מה למדת)/.test(t)) {
+      const facts = await this.memory.listActive();
+      const reply = facts.length
+        ? 'מה שאני זוכר עליך:\n' + facts.map((f) => `• ${f.content}`).join('\n')
+        : 'עדיין לא שמרתי עליך שום דבר.';
+      await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, reply);
+      return true;
+    }
+
+    const forget = t.match(/^(?:תשכח|שכח)\s+(?:ש)?(.+)$/s);
+    if (forget) {
+      const count = await this.memory.forget(forget[1]);
+      const reply = count
+        ? `מחקתי מהזיכרון (${count}).`
+        : 'לא מצאתי משהו תואם בזיכרון למחיקה.';
+      await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, reply);
+      return true;
+    }
+
+    return false;
   }
 
   /** Truthful confirmation for an approved action's actual outcome. */

@@ -3,6 +3,8 @@ import { ActionsModule } from '../actions/actions.module';
 import { ApprovalsModule } from '../approvals/approvals.module';
 import { ClarificationsModule } from '../clarifications/clarifications.module';
 import { MediaModule } from '../media/media.module';
+import { MemoryModule } from '../memory/memory.module';
+import { OrchestrationModule } from '../orchestration/orchestration.module';
 import { PlannerModule } from '../planner/planner.module';
 import { MessageProcessorService } from '../processing/message-processor.service';
 import { QueueService } from '../queue/queue.service';
@@ -12,6 +14,8 @@ import { WebhookRegistrarService } from './webhook-registrar.service';
 @Module({
   imports: [
     MediaModule,
+    MemoryModule,
+    OrchestrationModule,
     PlannerModule,
     ActionsModule,
     ClarificationsModule,

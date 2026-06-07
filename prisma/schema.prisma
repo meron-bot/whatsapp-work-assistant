@@ -88,6 +88,15 @@ enum ActionResultStatus {
   skipped
 }
 
+enum MemoryType {
+  preference
+  contact
+  project_fact
+  pattern
+  correction
+  glossary
+}
+
 // ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------
@@ -281,4 +290,25 @@ model AgentMemory {
   source    String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/// Durable, owner-specific facts the assistant learns over time (preferences,
+/// contacts, recurring patterns, corrections). Written as a by-product of the
+/// planner call (no extra AI request) and injected back into future prompts so
+/// the assistant adapts to how the owner works.
+model LearnedFact {
+  id         String     @id @default(cuid())
+  type       MemoryType
+  subject    String?
+  content    String
+  structured Json?
+  confidence Float      @default(0.7)
+  source     String?
+  useCount   Int        @default(0)
+  lastUsedAt DateTime?
+  active     Boolean    @default(true)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([type, active])
 }

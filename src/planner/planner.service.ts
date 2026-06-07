@@ -92,6 +92,8 @@ export class PlannerService {
       needsClarification: true,
       clarificationQuestion:
         'לא הצלחתי להבין את הבקשה בצורה ברורה. אפשר לנסח שוב מה צריך לעשות?',
+      toolRequests: [],
+      assumptions: [],
       actions: [
         {
           type: 'ask_clarification',
@@ -111,6 +113,7 @@ export class PlannerService {
           toolPayload: {},
         },
       ],
+      memoryWrites: [],
       replyToUser:
         'לא הצלחתי להבין את הבקשה בצורה ברורה. אפשר לנסח שוב מה צריך לעשות?',
     };

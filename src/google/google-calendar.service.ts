@@ -14,6 +14,8 @@ export interface CreateEventInput {
   startTime: string;
   endTime: string;
   attendees?: string[];
+  /** Attach a Google Meet link. Defaults to true when there are attendees. */
+  addMeet?: boolean;
 }
 
 @Injectable()
@@ -64,19 +66,35 @@ export class GoogleCalendarService {
     return res.data.items ?? [];
   }
 
-  async createEvent(input: CreateEventInput): Promise<{ id: string; htmlLink: string }> {
+  async createEvent(
+    input: CreateEventInput,
+  ): Promise<{ id: string; htmlLink: string; meetLink: string | null }> {
     const calendar = await this.api();
+    const addMeet = input.addMeet ?? (input.attendees?.length ?? 0) > 0;
     const res = await calendar.events.insert({
       calendarId: 'primary',
       sendUpdates: input.attendees?.length ? 'all' : 'none',
+      conferenceDataVersion: addMeet ? 1 : 0,
       requestBody: {
         summary: input.title,
         description: input.description ?? undefined,
         start: { dateTime: input.startTime, timeZone: env().OWNER_TIMEZONE },
         end: { dateTime: input.endTime, timeZone: env().OWNER_TIMEZONE },
         attendees: input.attendees?.map((email) => ({ email })),
+        conferenceData: addMeet
+          ? {
+              createRequest: {
+                requestId: `meet-${Date.now()}`,
+                conferenceSolutionKey: { type: 'hangoutsMeet' },
+              },
+            }
+          : undefined,
       },
     });
-    return { id: res.data.id ?? '', htmlLink: res.data.htmlLink ?? '' };
+    return {
+      id: res.data.id ?? '',
+      htmlLink: res.data.htmlLink ?? '',
+      meetLink: res.data.hangoutLink ?? null,
+    };
   }
 }

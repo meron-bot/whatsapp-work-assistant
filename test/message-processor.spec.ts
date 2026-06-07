@@ -32,7 +32,10 @@ function emptyPlan(overrides: any = {}) {
     missingInformation: [],
     needsClarification: false,
     clarificationQuestion: null,
+    toolRequests: [],
+    assumptions: [],
     actions: [],
+    memoryWrites: [],
     replyToUser: '',
     ...overrides,
   };
@@ -64,6 +67,13 @@ function makeDeps(row: any, claimCount = 1) {
     markRejected: jest.fn(),
   };
   const audit = { success: jest.fn().mockResolvedValue(undefined) };
+  const memory = {
+    retrieveForPrompt: jest.fn().mockResolvedValue([]),
+    applyWrites: jest.fn().mockResolvedValue(undefined),
+    listActive: jest.fn().mockResolvedValue([]),
+    forget: jest.fn().mockResolvedValue(0),
+  };
+  const orchestrator = { resolve: jest.fn().mockResolvedValue([]) };
   const svc = new MessageProcessorService(
     prisma as any,
     whatsapp as any,
@@ -73,8 +83,10 @@ function makeDeps(row: any, claimCount = 1) {
     clarifications as any,
     approvals as any,
     audit as any,
+    memory as any,
+    orchestrator as any,
   );
-  return { svc, prisma, whatsapp, media, planner, executor, clarifications, approvals, audit };
+  return { svc, prisma, whatsapp, media, planner, executor, clarifications, approvals, audit, memory, orchestrator };
 }
 
 describe('MessageProcessorService', () => {
@@ -227,6 +239,30 @@ describe('MessageProcessorService', () => {
     expect(d.approvals.markApproved).not.toHaveBeenCalled();
     expect(d.executor.executePlan).toHaveBeenCalled();
     expect(d.whatsapp.sendText).toHaveBeenCalledWith('972500000000', 'קבעתי תזכורת.');
+  });
+
+  // Resolve-before-ask: planner asks for a tool, processor runs it and re-plans
+  it('runs requested tools and re-plans with the findings before acting', async () => {
+    const d = makeDeps(baseRow({ textContent: 'תקבע פגישה עם דני מחר' }));
+    // First pass: planner needs a contact email; second pass: clean plan.
+    d.planner.plan
+      .mockResolvedValueOnce(
+        emptyPlan({
+          toolRequests: [{ tool: 'gmail_find_contact', query: 'דני', reason: 'email' }],
+        }),
+      )
+      .mockResolvedValueOnce(emptyPlan({ replyToUser: 'קבעתי פגישה עם דני מחר ב-10:00.' }));
+    d.orchestrator.resolve.mockResolvedValue(['[איש קשר "דני"] כתובת מייל: danny@x.com']);
+
+    await d.svc.process('wamid.1');
+
+    expect(d.orchestrator.resolve).toHaveBeenCalledTimes(1);
+    expect(d.planner.plan).toHaveBeenCalledTimes(2);
+    // The re-plan received the findings.
+    expect(d.planner.plan.mock.calls[1][0].toolFindings).toEqual([
+      '[איש קשר "דני"] כתובת מייל: danny@x.com',
+    ]);
+    expect(d.whatsapp.sendText).toHaveBeenCalledWith('972500000000', 'קבעתי פגישה עם דני מחר ב-10:00.');
   });
 
   // (B5) When the planner's action is gated to approval/clarification, the

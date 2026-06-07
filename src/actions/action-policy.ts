@@ -6,8 +6,8 @@ export type PolicyDecision =
   | { kind: 'approval'; riskLevel: 'medium' | 'high'; reason: string }
   | { kind: 'ignore'; reason: string };
 
-export const CONFIDENCE_EXECUTE = 0.85;
-export const CONFIDENCE_CLARIFY = 0.6;
+export const CONFIDENCE_EXECUTE = 0.7;
+export const CONFIDENCE_CLARIFY = 0.5;
 
 const LOW_RISK_TYPES = new Set(['create_task', 'create_reminder', 'save_file']);
 
@@ -25,8 +25,12 @@ export function decideAction(action: PlannerAction): PolicyDecision {
     return { kind: 'clarify', reason: action.approvalReason ?? 'missing information' };
   }
 
-  // Explicit high-risk flag from the planner always wins.
-  if (action.requiresApproval || action.participants.length > 0) {
+  // Graduated policy: the planner marks outward-facing / risky actions
+  // requiresApproval=true (external email, inviting clients, money, deletions).
+  // Internal/reversible actions — including inviting people the owner already
+  // works with — are left requiresApproval=false and execute with a report. We
+  // trust that flag instead of gating on the mere presence of participants.
+  if (action.requiresApproval) {
     return {
       kind: 'approval',
       riskLevel: 'high',
@@ -62,12 +66,14 @@ export function decideAction(action: PlannerAction): PolicyDecision {
   }
 
   if (action.type === 'create_calendar_event') {
-    // No external participants here (handled above). Need an explicit time.
+    // Need an explicit time to place the event.
     if (!action.startTime) {
       return { kind: 'clarify', reason: 'event time is not explicit' };
     }
-    // Calendar events are medium-risk: confirm before creating.
-    return { kind: 'approval', riskLevel: 'medium', reason: 'create calendar event' };
+    // requiresApproval was handled above; reaching here means the planner judged
+    // this safe to auto-create (a personal hold, or an invite to known people).
+    // Create it and report — Google sends invites to any attendees.
+    return { kind: 'execute' };
   }
 
   if (action.type === 'draft_document') {
