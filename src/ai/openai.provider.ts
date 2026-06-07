@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import OpenAI, { toFile } from 'openai';
+import OpenAI from 'openai';
 import { z } from 'zod';
 import { env } from '../config/env';
 import { AppLogger } from '../logger/logger.service';
@@ -55,15 +55,26 @@ export class OpenAIProvider
 
   async transcribe(audio: Buffer, mimeType: string): Promise<TranscriptionResult> {
     const ext = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'mp4' : 'mp3';
-    const file = await toFile(audio, `audio.${ext}`, { type: mimeType });
-    const res = await this.client.audio.transcriptions.create({
-      file,
-      model: 'whisper-1',
-      response_format: 'verbose_json',
+    // Call the REST endpoint directly with native fetch + FormData. The bundled
+    // SDK's multipart upload path throws "Connection error" on Node 20, while a
+    // plain native multipart POST to the same host works reliably.
+    const form = new FormData();
+    form.append('file', new Blob([audio], { type: mimeType }), `audio.${ext}`);
+    form.append('model', 'whisper-1');
+    form.append('response_format', 'verbose_json');
+
+    const httpRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env().OPENAI_API_KEY}` },
+      body: form,
     });
+    if (!httpRes.ok) {
+      const body = await httpRes.text();
+      throw new Error(`OpenAI transcription failed (${httpRes.status}): ${body.slice(0, 300)}`);
+    }
     // whisper-1 verbose_json exposes no_speech / avg_logprob per segment; we use
     // a conservative heuristic to derive a confidence value.
-    const anyRes = res as unknown as {
+    const anyRes = (await httpRes.json()) as {
       text: string;
       language?: string;
       segments?: { avg_logprob?: number; no_speech_prob?: number }[];
