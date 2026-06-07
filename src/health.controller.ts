@@ -20,6 +20,41 @@ export class HealthController {
   }
 
   /**
+   * Outbound reachability probe. Voice transcription failed with "Connection
+   * error" to OpenAI while text (Anthropic/Meta) worked — this tells us whether
+   * the platform can actually reach each provider. No auth: a 401/200 means
+   * "reachable", a thrown error means "blocked/unreachable".
+   */
+  @Get('connectivity')
+  async connectivity() {
+    const probe = async (url: string) => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const startedAt = Date.now();
+      try {
+        const res = await fetch(url, { method: 'GET', signal: ctrl.signal });
+        return { reachable: true, httpStatus: res.status, ms: Date.now() - startedAt, error: null };
+      } catch (e) {
+        return {
+          reachable: false,
+          httpStatus: null,
+          ms: Date.now() - startedAt,
+          error: (e as Error).message.slice(0, 200),
+        };
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    const [openai, anthropic, meta] = await Promise.all([
+      probe('https://api.openai.com/v1/models'),
+      probe('https://api.anthropic.com/v1/models'),
+      probe('https://graph.facebook.com/v21.0/'),
+    ]);
+    return { ts: new Date().toISOString(), openai, anthropic, meta };
+  }
+
+  /**
    * Diagnostics — reports which subsystems are actually connected and which env
    * vars are present (booleans only, never values). Open this in a browser to
    * see exactly what is misconfigured without reading server logs.
