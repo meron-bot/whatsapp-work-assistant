@@ -39,15 +39,35 @@ export class HealthController {
     const dbUrl = process.env.DATABASE_URL ?? '';
     const dbConfigured = dbUrl.length > 0 && !dbUrl.includes('invalid:invalid@127.0.0.1');
 
+    // Are the tables actually present? The connection can be healthy (SELECT 1
+    // works) while migrations never ran, which makes every real query 500. This
+    // probe distinguishes "DB reachable" from "schema deployed".
+    let schemaReady: boolean | null = null;
+    let schemaError: string | null = null;
+    if (db) {
+      try {
+        const rows = await this.prisma.$queryRaw<{ present: boolean }[]>`
+          SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'WhatsAppMessage'
+          ) AS present`;
+        schemaReady = rows[0]?.present ?? false;
+      } catch (e) {
+        schemaError = (e as Error).message.replace(/\s+/g, ' ').trim().slice(0, 300);
+      }
+    }
+
     const queue = await this.queue.status();
 
     const present = (v?: string) => !!v && v.length > 0 && !v.includes('${{');
     return {
-      status: db && queue.healthy ? 'ok' : 'degraded',
+      status: db && queue.healthy && schemaReady !== false ? 'ok' : 'degraded',
       ts: new Date().toISOString(),
       subsystems: { database: db, queue: queue.driver, queueHealthy: queue.healthy },
       databaseConfigured: dbConfigured,
       databaseError: dbError,
+      schemaReady,
+      schemaError,
       webhook: this.webhookRegistrar.getStatus(),
       config: {
         DATABASE_URL: present(process.env.DATABASE_URL),
