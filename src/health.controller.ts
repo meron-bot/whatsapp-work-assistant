@@ -29,13 +29,13 @@ export class HealthController {
     } catch {
       db = false;
     }
-    const redis = await this.queue.checkRedis();
+    const queue = await this.queue.status();
 
     const present = (v?: string) => !!v && v.length > 0 && !v.includes('${{');
     return {
-      status: db && redis ? 'ok' : 'degraded',
+      status: db && queue.healthy ? 'ok' : 'degraded',
       ts: new Date().toISOString(),
-      subsystems: { database: db, redis },
+      subsystems: { database: db, queue: queue.driver, queueHealthy: queue.healthy },
       config: {
         DATABASE_URL: present(process.env.DATABASE_URL),
         REDIS_URL: present(process.env.REDIS_URL),

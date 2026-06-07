@@ -11,27 +11,33 @@ import {
 type MessageHandler = (job: ProcessMessageJob) => Promise<void>;
 
 /**
- * Thin wrapper around BullMQ. Owns the connection, the producer queue and the
- * worker. The processing handler is registered by the WhatsApp module to avoid
- * a circular dependency.
+ * Message dispatch with two drivers:
+ *  - 'redis'  : durable BullMQ queue with retries (used when a real remote Redis
+ *               is configured).
+ *  - 'inline' : process directly in-process, no Redis required (fine for a
+ *               single-owner assistant). Auto-selected when REDIS_URL is missing
+ *               or points at localhost, so the app needs no paid Redis add-on.
+ *
+ * Idempotency is enforced downstream by the message processor's atomic claim, so
+ * inline fire-and-forget is safe against WhatsApp webhook retries.
  */
 @Injectable()
 export class QueueService implements OnModuleInit, OnModuleDestroy {
-  private queue!: Queue;
+  private queue?: Queue;
   private worker?: Worker;
   private handler?: MessageHandler;
   private readonly logger = new AppLogger('QueueService');
 
-  /** Build a BullMQ connection options object from the configured REDIS_URL. */
+  driver(): 'redis' | 'inline' {
+    const explicit = env().QUEUE_DRIVER;
+    if (explicit) return explicit;
+    const url = (env().REDIS_URL || '').trim();
+    if (!url || url.includes('localhost') || url.includes('127.0.0.1')) return 'inline';
+    return 'redis';
+  }
+
   private connectionOptions(): ConnectionOptions {
-    const raw = env().REDIS_URL;
-    let url: URL;
-    try {
-      url = new URL(raw);
-    } catch {
-      this.logger.error('Invalid REDIS_URL — falling back to localhost', { raw });
-      url = new URL('redis://localhost:6379');
-    }
+    const url = new URL(env().REDIS_URL);
     return {
       host: url.hostname,
       port: Number(url.port || 6379),
@@ -43,17 +49,24 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
-    // Never let queue setup crash startup; the HTTP server must come online.
+    if (this.driver() !== 'redis') {
+      this.logger.log('Queue driver: inline (no Redis required)');
+      return;
+    }
     try {
       this.queue = new Queue(QUEUE_MESSAGE_PROCESSING, { connection: this.connectionOptions() });
+      this.logger.log('Queue driver: redis');
     } catch (e) {
-      this.logger.error('Queue init failed (continuing)', { error: (e as Error).message });
+      this.logger.error('Queue init failed — falling back to inline', { error: (e as Error).message });
+      this.queue = undefined;
     }
   }
 
   /** Registered by the consumer module after construction. */
   registerMessageHandler(handler: MessageHandler): void {
     this.handler = handler;
+    if (this.driver() !== 'redis' || !this.queue) return;
+
     this.worker = new Worker(
       QUEUE_MESSAGE_PROCESSING,
       async (job: Job<ProcessMessageJob>) => {
@@ -62,7 +75,6 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
       },
       { connection: this.connectionOptions() },
     );
-
     this.worker.on('failed', (job, err) => {
       this.logger.error('Job failed', {
         jobId: job?.id,
@@ -73,28 +85,48 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
   }
 
   async enqueueMessage(data: ProcessMessageJob): Promise<void> {
-    await this.queue.add('process', data, {
-      ...DEFAULT_JOB_OPTS,
-      // idempotency at the queue level (BullMQ job ids must not contain ':')
-      jobId: `msg-${data.whatsappMessageId}`,
+    if (this.driver() === 'redis' && this.queue) {
+      await this.queue.add('process', data, {
+        ...DEFAULT_JOB_OPTS,
+        // idempotency at the queue level (BullMQ job ids must not contain ':')
+        jobId: `msg-${data.whatsappMessageId}`,
+      });
+      return;
+    }
+    // Inline: process without blocking the webhook 200 response. Errors are
+    // logged; the message row is left 'failed' for retry/visibility.
+    this.runInline(data);
+  }
+
+  private runInline(data: ProcessMessageJob): void {
+    if (!this.handler) {
+      this.logger.error('No handler registered for inline processing');
+      return;
+    }
+    setImmediate(() => {
+      void this.handler!(data).catch((err) =>
+        this.logger.error('Inline processing failed', {
+          whatsappMessageId: data.whatsappMessageId,
+          error: (err as Error).message,
+        }),
+      );
     });
   }
 
   async getFailedJobs(limit = 50) {
+    if (this.driver() !== 'redis' || !this.queue) return [];
     return this.queue.getFailed(0, limit);
   }
 
-  /** Lightweight Redis connectivity check for diagnostics. */
-  async checkRedis(): Promise<boolean> {
+  /** Diagnostics: queue driver + health (Redis ping, or 'n/a' for inline). */
+  async status(): Promise<{ driver: string; healthy: boolean }> {
+    const driver = this.driver();
+    if (driver !== 'redis' || !this.queue) return { driver: 'inline', healthy: true };
     try {
-      if (!this.queue) return false;
-      const client = (await this.queue.client) as unknown as {
-        ping(): Promise<string>;
-      };
-      const pong = await client.ping();
-      return pong === 'PONG';
+      const client = (await this.queue.client) as unknown as { ping(): Promise<string> };
+      return { driver: 'redis', healthy: (await client.ping()) === 'PONG' };
     } catch {
-      return false;
+      return { driver: 'redis', healthy: false };
     }
   }
 

@@ -17,6 +17,9 @@ const envSchema = z.object({
     .min(1)
     .default('postgresql://invalid:invalid@127.0.0.1:5432/invalid'),
   REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
+  // 'inline' needs no Redis (default when REDIS_URL is unset/localhost). 'redis'
+  // uses a durable BullMQ queue. Leave unset to auto-detect.
+  QUEUE_DRIVER: z.enum(['redis', 'inline']).optional(),
 
   // Not strictly required to BOOT — a partially-configured deploy still starts so
   // /status can report what's missing (instead of crash-looping invisibly).
@@ -63,17 +66,21 @@ export function loadEnv(): AppEnv {
   // Neutralise unresolved Railway/Render variable references (e.g.
   // "${{Redis.REDIS_URL}}") so the app still boots and /status can report the
   // problem, instead of crash-looping with a cryptic URL parse error.
+  // Normalise unresolved references ("${{...}}") AND empty strings so Zod
+  // defaults apply (an unresolved Railway reference resolves to ""). Without
+  // this the app crash-loops on an empty DATABASE_URL/REDIS_URL.
   const unresolved: string[] = [];
   for (const [k, v] of Object.entries(process.env)) {
-    if (typeof v === 'string' && v.includes('${{')) {
-      unresolved.push(k);
-      if (k === 'DATABASE_URL') {
-        // Prisma reads process.env.DATABASE_URL directly, so it must stay a
-        // parseable URL — use an unreachable placeholder rather than deleting it.
-        process.env.DATABASE_URL = 'postgresql://invalid:invalid@127.0.0.1:5432/invalid';
-      } else {
-        delete process.env[k];
-      }
+    const isUnresolved = typeof v === 'string' && v.includes('${{');
+    const isEmpty = v === '';
+    if (!isUnresolved && !isEmpty) continue;
+    if (isUnresolved) unresolved.push(k);
+    if (k === 'DATABASE_URL') {
+      // Prisma reads process.env.DATABASE_URL directly, so keep it a parseable
+      // (but unreachable) URL; /status will report database:false.
+      process.env.DATABASE_URL = 'postgresql://invalid:invalid@127.0.0.1:5432/invalid';
+    } else {
+      delete process.env[k]; // let the Zod default take over
     }
   }
   if (unresolved.length) {
