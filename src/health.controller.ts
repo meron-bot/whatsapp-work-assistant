@@ -29,9 +29,14 @@ export class HealthController {
       db = true;
     } catch (e) {
       db = false;
-      // Surface a short reason (no secrets) to diagnose connection issues.
-      dbError = (e as Error).message.split('\n')[0].slice(0, 200);
+      // Collapse whitespace/newlines so the real reason shows (no secrets).
+      dbError = (e as Error).message.replace(/\s+/g, ' ').trim().slice(0, 300);
     }
+    // Did the owner actually set a real DATABASE_URL, or is it the placeholder
+    // (which means the variable is still empty/unresolved on the platform)?
+    const dbUrl = process.env.DATABASE_URL ?? '';
+    const dbConfigured = dbUrl.length > 0 && !dbUrl.includes('invalid:invalid@127.0.0.1');
+
     const queue = await this.queue.status();
 
     const present = (v?: string) => !!v && v.length > 0 && !v.includes('${{');
@@ -39,6 +44,7 @@ export class HealthController {
       status: db && queue.healthy ? 'ok' : 'degraded',
       ts: new Date().toISOString(),
       subsystems: { database: db, queue: queue.driver, queueHealthy: queue.healthy },
+      databaseConfigured: dbConfigured,
       databaseError: dbError,
       config: {
         DATABASE_URL: present(process.env.DATABASE_URL),
