@@ -1,6 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import { PrismaService } from './prisma/prisma.service';
 import { QueueService } from './queue/queue.service';
+import { MigrationRunnerService } from './prisma/migration-runner.service';
 import { WebhookRegistrarService } from './whatsapp/webhook-registrar.service';
 
 @Controller()
@@ -9,6 +10,7 @@ export class HealthController {
     private readonly prisma: PrismaService,
     private readonly queue: QueueService,
     private readonly webhookRegistrar: WebhookRegistrarService,
+    private readonly migrationRunner: MigrationRunnerService,
   ) {}
 
   /** Liveness — always 200 if the process is up (used by the platform healthcheck). */
@@ -68,6 +70,7 @@ export class HealthController {
       databaseError: dbError,
       schemaReady,
       schemaError,
+      migration: this.migrationRunner.getStatus(),
       webhook: this.webhookRegistrar.getStatus(),
       config: {
         DATABASE_URL: present(process.env.DATABASE_URL),

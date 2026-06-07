@@ -8,6 +8,7 @@ import * as express from 'express';
 import { AppModule } from './app.module';
 import { loadEnv } from './config/env';
 import { AppLogger } from './logger/logger.service';
+import { MigrationRunnerService } from './prisma/migration-runner.service';
 import { WebhookRegistrarService } from './whatsapp/webhook-registrar.service';
 
 async function bootstrap(): Promise<void> {
@@ -34,6 +35,14 @@ async function bootstrap(): Promise<void> {
   // Bind explicitly to 0.0.0.0 so the platform proxy/healthcheck can reach us.
   await app.listen(config.PORT, '0.0.0.0');
   logger.log(`Work assistant listening on 0.0.0.0:${config.PORT}`);
+
+  // Apply DB migrations in-process as a backstop to the shell entrypoint, and
+  // capture the result so /status can report a failed/missing schema.
+  try {
+    await app.get(MigrationRunnerService, { strict: false }).runMigrations();
+  } catch (err) {
+    logger.error('In-process migration error (non-fatal)', { error: (err as Error).message });
+  }
 
   // Self-register the WhatsApp webhook with Meta (no manual dashboard step).
   // Runs after the server is listening so Meta's verification GET succeeds.
