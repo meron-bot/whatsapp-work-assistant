@@ -9,7 +9,13 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   APP_BASE_URL: z.string().url().default('http://localhost:3000'),
 
-  DATABASE_URL: z.string().min(1),
+  // Always boots: if DATABASE_URL is missing/unresolved the app still starts with
+  // an unreachable placeholder, and /status reports database:false (instead of
+  // crash-looping invisibly).
+  DATABASE_URL: z
+    .string()
+    .min(1)
+    .default('postgresql://invalid:invalid@127.0.0.1:5432/invalid'),
   REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
 
   // Not strictly required to BOOT — a partially-configured deploy still starts so
@@ -61,7 +67,13 @@ export function loadEnv(): AppEnv {
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === 'string' && v.includes('${{')) {
       unresolved.push(k);
-      delete process.env[k];
+      if (k === 'DATABASE_URL') {
+        // Prisma reads process.env.DATABASE_URL directly, so it must stay a
+        // parseable URL — use an unreachable placeholder rather than deleting it.
+        process.env.DATABASE_URL = 'postgresql://invalid:invalid@127.0.0.1:5432/invalid';
+      } else {
+        delete process.env[k];
+      }
     }
   }
   if (unresolved.length) {
