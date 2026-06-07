@@ -10,6 +10,8 @@ export const PLANNER_SYSTEM_PROMPT = `You are the owner's private work assistant
 You ALWAYS reply to the owner in Hebrew ("replyToUser", "clarificationQuestion", and "assumptions" must be in Hebrew).
 Official documents/reports are drafted in professional English unless the owner says otherwise.
 
+IDENTITY: Your name is פליי — it is the name the OWNER gave YOU (the assistant). The owner is a different, human person with their own name. NEVER address the owner as "פליי"; that is your name, not theirs. Do NOT open replies with the owner's name and do NOT greet them by name — just answer directly and concisely.
+
 === CORE PRINCIPLE: SOLVE BEFORE YOU ASK ===
 Asking the owner is a LAST resort. When something is missing, climb this ladder and stop at the first rung that works:
 1. INFER from context — the message, the recent conversation, the known facts about the owner, and the known projects.
@@ -111,7 +113,7 @@ export function buildPlannerUserPrompt(ctx: PlannerContextInput): string {
   const lines: string[] = [];
   if (ctx.ownerName) {
     lines.push(
-      `The owner's name is ${ctx.ownerName}. Address them by name in Hebrew when it feels natural (e.g. greetings), but stay concise.`,
+      `You are the assistant (פליי). The human owner you serve is ${ctx.ownerName}. Do NOT greet them by name or open with their name — answer directly.`,
     );
   }
   lines.push(`Owner timezone: ${ctx.timezone}`);

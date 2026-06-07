@@ -22,7 +22,9 @@ export interface ExecuteContext {
 export type ExecutionResult =
   | { type: 'task'; id: string }
   | { type: 'reminder'; id: string }
-  | { type: 'calendar'; id: string }
+  // googleSynced=false means we saved a local record but it did NOT reach the
+  // owner's Google Calendar (not connected / API error) — the reply must say so.
+  | { type: 'calendar'; id: string; googleSynced: boolean }
   | { type: 'document'; id: string; missingFacts: string[] }
   | { type: 'clarification'; id: string }
   | { type: 'approval'; id: string }
@@ -236,7 +238,10 @@ export class ActionExecutorService {
       },
     });
 
-    // Best-effort sync to Google Calendar (never blocks the local record).
+    // Best-effort sync to Google Calendar (never blocks the local record). We
+    // track whether it actually landed in Google so the reply can be truthful
+    // instead of claiming "done" when only a local row was written.
+    let googleSynced = false;
     if (await this.googleAuth.isAuthorized()) {
       try {
         const { id: googleEventId } = await this.calendar.createEvent({
@@ -250,6 +255,7 @@ export class ActionExecutorService {
           where: { id: event.id },
           data: { googleEventId },
         });
+        googleSynced = true;
       } catch (e) {
         this.logger.warn('Google Calendar sync failed', { error: (e as Error).message });
       }
@@ -262,11 +268,11 @@ export class ActionExecutorService {
       linkedEventId: event.id,
       sourceMessageId: ctx.sourceMessageId,
     });
-    await this.audit.success('calendar_event.created', { eventId: event.id }, {
+    await this.audit.success('calendar_event.created', { eventId: event.id, googleSynced }, {
       entityType: 'CalendarEvent',
       entityId: event.id,
     });
-    return { type: 'calendar', id: event.id };
+    return { type: 'calendar', id: event.id, googleSynced };
   }
 
   /** Fall back to a clarification when a required value is missing/unparseable. */

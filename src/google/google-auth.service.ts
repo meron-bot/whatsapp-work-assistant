@@ -15,6 +15,8 @@ export const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/tasks',
   'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/documents',
+  // Read access is required to search mail and resolve contact emails.
+  'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.compose',
   'https://www.googleapis.com/auth/gmail.send',
 ];

@@ -24,7 +24,9 @@ const envSchema = z.object({
   // Not strictly required to BOOT — a partially-configured deploy still starts so
   // /status can report what's missing (instead of crash-looping invisibly).
   OWNER_WHATSAPP_NUMBER: z.string().optional().default(''),
-  OWNER_NAME: z.string().default('פליי'),
+  // The HUMAN owner's name (Miron). NOT the assistant's name — the assistant is
+  // called פליי. Keep these distinct so the assistant never calls the owner פליי.
+  OWNER_NAME: z.string().default('מירון'),
   OWNER_TIMEZONE: z.string().default('Asia/Jerusalem'),
   OWNER_LANGUAGE: z.string().default('he'),
 

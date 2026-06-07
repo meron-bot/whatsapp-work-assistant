@@ -231,8 +231,20 @@ export class MessageProcessorService {
     // messaged the owner — don't send a contradicting "done" reply.
     const gated = results.some((r) => r.type === 'approval' || r.type === 'clarification');
     if (!gated && plan.replyToUser) {
-      await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, plan.replyToUser);
+      // Truthfulness: if a calendar event was saved locally but never reached
+      // Google Calendar, don't let the optimistic "קבעתי" stand alone.
+      const calendarNotSynced = results.some((r) => r.type === 'calendar' && !r.googleSynced);
+      const reply = calendarNotSynced
+        ? `${plan.replyToUser}\n\n${this.calendarNotSyncedNote()}`
+        : plan.replyToUser;
+      await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, reply);
     }
+  }
+
+  /** Honest note appended when an event was saved locally but Google Calendar is
+   *  not connected, so the owner is not misled into thinking it's in their calendar. */
+  private calendarNotSyncedNote(): string {
+    return `⚠️ שמרתי את זה אצלי, אבל יומן Google לא מחובר — האירוע לא נכנס ליומן שלך בפועל. לחיבור: ${env().APP_BASE_URL}/auth/google`;
   }
 
   private async executeApprovedAction(approvalId: string): Promise<ExecutionResult | null> {
@@ -308,7 +320,9 @@ export class MessageProcessorService {
       case 'reminder':
         return 'אושר. קבעתי תזכורת.';
       case 'calendar':
-        return 'אושר. יצרתי את האירוע ביומן.';
+        return result && result.type === 'calendar' && !result.googleSynced
+          ? `אושר, אבל יומן Google לא מחובר אז האירוע לא נכנס ליומן בפועל.\n${this.calendarNotSyncedNote()}`
+          : 'אושר. יצרתי את האירוע ביומן.';
       case 'document':
         return 'אושר. הכנתי את הטיוטה.';
       case 'clarification':
