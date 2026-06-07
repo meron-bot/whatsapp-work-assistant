@@ -13,7 +13,7 @@ else
 fi
 
 echo "[entrypoint] Seeding owner record (idempotent)..."
-node dist/scripts/seed.js || echo "[entrypoint] seed skipped/failed (non-fatal)"
+timeout 30 node dist/scripts/seed.js || echo "[entrypoint] seed skipped/failed/timed out (non-fatal)"
 
 echo "[entrypoint] Starting application..."
 exec node dist/main.js
