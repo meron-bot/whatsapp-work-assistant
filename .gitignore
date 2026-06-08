@@ -7,6 +7,13 @@ coverage/
 .env.local
 .env.production
 .DS_Store
+
+# Secrets / credentials — NEVER commit these
+googel.txt
+google*.txt
+*.secret
+*credential*
+secrets/
 prisma/*.db
 *.tsbuildinfo
 dump.rdb
