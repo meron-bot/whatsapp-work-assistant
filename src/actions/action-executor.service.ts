@@ -190,7 +190,17 @@ export class ActionExecutorService {
         await this.prisma.task.update({ where: { id: task.id }, data: { googleTaskId } });
         googleSynced = true;
       } catch (e) {
-        this.logger.warn('Google Tasks sync failed', { error: (e as Error).message });
+        // Surface the Google API's field-level detail (not just the generic
+        // "Request contains an invalid argument") so any future rejection names
+        // the exact offending field in the logs instead of being a black box.
+        const detail =
+          (e as { response?: { data?: { error?: unknown } } })?.response?.data?.error ??
+          (e as { errors?: unknown })?.errors ??
+          null;
+        this.logger.warn('Google Tasks sync failed', {
+          error: (e as Error).message,
+          detail: detail ? JSON.stringify(detail) : undefined,
+        });
       }
     }
 
