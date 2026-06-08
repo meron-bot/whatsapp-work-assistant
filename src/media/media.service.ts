@@ -20,6 +20,28 @@ export interface ProcessedMedia {
   degradedNote: string | null;
 }
 
+/** Map a media-processing failure to an honest, actionable owner message. The
+ *  common case is an OpenAI quota/billing error (transcription AND vision both run
+ *  on OpenAI), which needs a specific action — not the vague "try again" that just
+ *  causes futile resends. */
+export function degradedNoteFor(error: string): string {
+  const e = error.toLowerCase();
+  const quotaHit =
+    e.includes('insufficient_quota') ||
+    e.includes('exceeded your current quota') ||
+    e.includes('quota') ||
+    e.includes('billing') ||
+    e.includes('(429)');
+  if (quotaHit) {
+    return (
+      'לא הצלחתי לתמלל את ההקלטה — נגמר התקציב בחשבון ה-OpenAI שמתמלל הקלטות ומנתח תמונות. ' +
+      'צריך לטעון יתרה ב-platform.openai.com/account/billing (זול מאוד — סנטים לדקת הקלטה). ' +
+      'בינתיים פשוט תכתוב לי מה צריך ואני אטפל מיד.'
+    );
+  }
+  return 'הקובץ נשמר, אבל לא הצלחתי לעבד אותו כרגע. אפשר לשלוח שוב או לכתוב לי את המשימה.';
+}
+
 /**
  * Downloads and persists original media, then runs transcription / vision /
  * text extraction. Originals are ALWAYS stored even when AI processing fails,
@@ -112,8 +134,7 @@ export class MediaService {
       processingError = (e as Error).message.slice(0, 500);
       this.logger.error('Media AI processing failed', { error: processingError });
       result.transcriptReliable = false;
-      result.degradedNote =
-        'הקובץ נשמר, אבל לא הצלחתי לעבד אותו. אפשר לשלוח שוב או לכתוב לי את המשימה.';
+      result.degradedNote = degradedNoteFor(processingError);
     }
 
     await this.prisma.mediaAsset.update({

@@ -80,4 +80,26 @@ describe('MediaService audio pipeline', () => {
     expect(storage.save).toHaveBeenCalled();
     expect(result?.degradedNote).toContain('הקובץ נשמר');
   });
+
+  // An OpenAI quota/billing failure gets a specific, actionable note (not the
+  // vague "try again" that just causes endless futile resends).
+  it('gives a clear billing message when transcription fails on OpenAI quota', async () => {
+    const whatsapp = {
+      downloadMedia: jest.fn().mockResolvedValue({ buffer: Buffer.from('x'), mimeType: 'audio/ogg' }),
+    } as any;
+    const storage = { save: jest.fn().mockResolvedValue({ storagePath: '/tmp/a.ogg', publicUrl: null }) } as any;
+    const ai = {
+      transcribe: jest
+        .fn()
+        .mockRejectedValue(new Error('OpenAI transcription failed (429): {"error":{"type":"insufficient_quota"}}')),
+    } as any;
+    const prisma = {
+      mediaAsset: { create: jest.fn().mockResolvedValue({ id: 'asset4' }), update: jest.fn().mockResolvedValue({}) },
+    } as any;
+
+    const svc = new MediaService(whatsapp, storage, ai, prisma);
+    const result = await svc.ingest(audioMessage(), 'row4');
+    expect(result?.degradedNote).toContain('OpenAI');
+    expect(result?.degradedNote).toContain('billing');
+  });
 });

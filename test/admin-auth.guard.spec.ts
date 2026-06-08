@@ -15,9 +15,14 @@ function ctx(headers: Record<string, unknown> = {}, query: Record<string, unknow
 describe('AdminAuthGuard', () => {
   const guard = new AdminAuthGuard();
 
-  it('allows everything when ADMIN_TOKEN is unset (no lock-out)', () => {
-    mockedEnv.mockReturnValue({ ADMIN_TOKEN: '' });
+  it('stays open in development when ADMIN_TOKEN is unset', () => {
+    mockedEnv.mockReturnValue({ ADMIN_TOKEN: '', NODE_ENV: 'development' });
     expect(guard.canActivate(ctx())).toBe(true);
+  });
+
+  it('fails CLOSED in production when ADMIN_TOKEN is unset (secure by default)', () => {
+    mockedEnv.mockReturnValue({ ADMIN_TOKEN: '', NODE_ENV: 'production' });
+    expect(() => guard.canActivate(ctx())).toThrow();
   });
 
   it('rejects when a token is required but none is presented', () => {

@@ -4,17 +4,26 @@ import * as crypto from 'crypto';
 import { env } from '../config/env';
 
 /**
- * Guards the admin dashboard. When ADMIN_TOKEN is unset the dashboard stays open
- * (so an existing setup is never locked out by upgrading). When it IS set, every
- * /admin request must present the token — via HTTP Basic auth (browser-friendly:
- * any username, the token as the password), a Bearer header, an x-admin-token
- * header, or a ?token= query param. The comparison is timing-safe.
+ * Guards the admin dashboard, which exposes private data.
+ *
+ * - ADMIN_TOKEN set → every /admin request must present it (HTTP Basic password,
+ *   Bearer header, x-admin-token header, or ?token=); timing-safe comparison.
+ * - ADMIN_TOKEN unset + production → fail CLOSED (deny). Secure by default: a
+ *   public deploy never leaks the owner's data just because no token was set.
+ * - ADMIN_TOKEN unset + non-production → open, for local dev convenience.
  */
 @Injectable()
 export class AdminAuthGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const expected = env().ADMIN_TOKEN;
-    if (!expected) return true; // not configured → open, as before
+    if (!expected) {
+      if (env().NODE_ENV === 'production') {
+        throw new UnauthorizedException(
+          'Admin dashboard is locked. Set ADMIN_TOKEN to enable access.',
+        );
+      }
+      return true; // dev convenience only
+    }
 
     const req = context.switchToHttp().getRequest<Request>();
     const provided = this.extractToken(req);
