@@ -57,12 +57,13 @@ const envSchema = z.object({
 
   // Planner router: when true, a cheap classification call picks a per-intent
   // specialist; otherwise every message uses the general monolith (zero change).
-  // NOTE: z.coerce.boolean() treats any non-empty string (incl. "false") as true,
-  // so compare explicitly instead.
+  // ON by default now that the split is proven; set the env var to 'false' to
+  // roll back. NOTE: z.coerce.boolean() treats any non-empty string (incl.
+  // "false") as true, so compare explicitly instead.
   PLANNER_ROUTER_ENABLED: z
     .string()
     .optional()
-    .default('false')
+    .default('true')
     .transform((v) => v === 'true' || v === '1'),
 
   // Web research sub-agent. 'none' (default) keeps web_research disabled and the
@@ -71,6 +72,11 @@ const envSchema = z.object({
   WEB_SEARCH_PROVIDER: z.enum(['none', 'brave', 'tavily']).default('none'),
   BRAVE_SEARCH_API_KEY: z.string().optional().default(''),
   TAVILY_API_KEY: z.string().optional().default(''),
+
+  // Admin dashboard guard. When set, /admin requires this token (HTTP Basic
+  // password, Bearer header, or ?token=). Left empty → dashboard stays open
+  // (no lock-out for existing setups). Set it in production to protect PII.
+  ADMIN_TOKEN: z.string().optional().default(''),
 
   STORAGE_PROVIDER: z.enum(['local', 'drive', 's3']).default('local'),
   LOCAL_STORAGE_PATH: z.string().default('./storage'),

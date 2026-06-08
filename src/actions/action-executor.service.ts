@@ -9,6 +9,7 @@ import { GoogleTasksService } from '../google/google-tasks.service';
 import { GoogleCalendarService } from '../google/google-calendar.service';
 import { GoogleAuthService } from '../google/google-auth.service';
 import { GoogleGmailService } from '../google/google-gmail.service';
+import { GoogleDocsService } from '../google/google-docs.service';
 import { OpenLoopService } from '../open-loops/open-loop.service';
 import { PlannerAction, PlannerOutput } from '../planner/planner.schema';
 import { PrismaService } from '../prisma/prisma.service';
@@ -28,8 +29,12 @@ export type ExecutionResult =
   | { type: 'reminder'; id: string }
   // googleSynced=false means we saved a local record but it did NOT reach the
   // owner's Google Calendar (not connected / API error) — the reply must say so.
-  | { type: 'calendar'; id: string; googleSynced: boolean }
-  | { type: 'document'; id: string; missingFacts: string[] }
+  // conflict=true means the slot overlaps an existing calendar event; meetLink is
+  // the Google Meet URL when one was created. Both are surfaced to the owner.
+  | { type: 'calendar'; id: string; googleSynced: boolean; conflict?: boolean; meetLink?: string | null }
+  // content is the drafted body; googleDocUrl is the editable Doc link when Google
+  // is connected (null otherwise). Both let the reply actually DELIVER the draft.
+  | { type: 'document'; id: string; missingFacts: string[]; content: string; googleDocUrl: string | null }
   // sent=false means the approved email did NOT go out (Gmail not connected or
   // the API failed) — the reply MUST say so instead of claiming "נשלח".
   | { type: 'email'; sent: boolean; to: string | null; reason?: 'not_connected' | 'send_failed' }
@@ -66,6 +71,7 @@ export class ActionExecutorService {
     private readonly calendar: GoogleCalendarService,
     private readonly googleAuth: GoogleAuthService,
     private readonly gmail: GoogleGmailService,
+    private readonly docs: GoogleDocsService,
     private readonly audit: AuditService,
   ) {}
 
@@ -268,15 +274,21 @@ export class ActionExecutorService {
     // track whether it actually landed in Google so the reply can be truthful
     // instead of claiming "done" when only a local row was written.
     let googleSynced = false;
+    let conflict = false;
+    let meetLink: string | null = null;
     if (await this.googleAuth.isAuthorized()) {
+      // Conflict watch: warn (but still book) when the slot overlaps an existing
+      // event, so the owner can decide rather than double-booking silently.
+      conflict = await this.hasConflict(start, end);
       try {
-        const { id: googleEventId } = await this.calendar.createEvent({
+        const { id: googleEventId, meetLink: link } = await this.calendar.createEvent({
           title: action.title,
           description: action.description,
           startTime: start.toISOString(),
           endTime: end.toISOString(),
           attendees: action.participants,
         });
+        meetLink = link;
         await this.prisma.calendarEvent.update({
           where: { id: event.id },
           data: { googleEventId },
@@ -294,11 +306,28 @@ export class ActionExecutorService {
       linkedEventId: event.id,
       sourceMessageId: ctx.sourceMessageId,
     });
-    await this.audit.success('calendar_event.created', { eventId: event.id, googleSynced }, {
+    await this.audit.success('calendar_event.created', { eventId: event.id, googleSynced, conflict }, {
       entityType: 'CalendarEvent',
       entityId: event.id,
     });
-    return { type: 'calendar', id: event.id, googleSynced };
+    return { type: 'calendar', id: event.id, googleSynced, conflict, meetLink };
+  }
+
+  /** True when [start,end) overlaps an existing busy slot on the primary calendar.
+   *  Best-effort: a free/busy lookup failure is treated as "no known conflict"
+   *  (never blocks booking). */
+  private async hasConflict(start: Date, end: Date): Promise<boolean> {
+    try {
+      const busy = await this.calendar.checkFreeBusy(start.toISOString(), end.toISOString());
+      return busy.some((b) => {
+        const bs = new Date(b.start).getTime();
+        const be = new Date(b.end).getTime();
+        return bs < end.getTime() && be > start.getTime();
+      });
+    } catch (e) {
+      this.logger.warn('Free/busy conflict check failed', { error: (e as Error).message });
+      return false;
+    }
   }
 
   /** Fall back to a clarification when a required value is missing/unparseable. */
@@ -338,11 +367,35 @@ export class ActionExecutorService {
       client: action.client,
       sourceMessageId: ctx.sourceMessageId,
     });
-    await this.audit.success('document.drafted', { docId: draft.id }, {
+
+    // Deliver the draft. When Google is connected, push it to a Google Doc so the
+    // owner gets an editable link; otherwise the reply carries the body inline.
+    // Either way the draft never just sits invisibly in the database.
+    let googleDocUrl: string | null = null;
+    if (await this.googleAuth.isAuthorized()) {
+      try {
+        const { id: googleDocId, url } = await this.docs.createDocument(action.title, draft.content);
+        googleDocUrl = url;
+        await this.prisma.documentDraft.update({
+          where: { id: draft.id },
+          data: { googleDocId, googleDriveUrl: url },
+        });
+      } catch (e) {
+        this.logger.warn('Google Docs export failed', { error: (e as Error).message });
+      }
+    }
+
+    await this.audit.success('document.drafted', { docId: draft.id, googleDocUrl }, {
       entityType: 'DocumentDraft',
       entityId: draft.id,
     });
-    return { type: 'document', id: draft.id, missingFacts: draft.missingFacts };
+    return {
+      type: 'document',
+      id: draft.id,
+      missingFacts: draft.missingFacts,
+      content: draft.content,
+      googleDocUrl,
+    };
   }
 
   /**

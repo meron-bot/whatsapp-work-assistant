@@ -1,13 +1,18 @@
-import { Controller, Get, Res } from '@nestjs/common';
+import { Controller, Get, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
+import { AdminAuthGuard } from './admin-auth.guard';
 
 /**
  * Minimal admin UI. A single HTML dashboard plus JSON endpoints backing each
  * panel (recent messages, pending clarifications/approvals, open loops, tasks,
  * calendar proposals, documents, media, failed jobs, action logs).
+ *
+ * Guarded by ADMIN_TOKEN (see AdminAuthGuard) — the panels expose private data,
+ * so when a token is configured every endpoint here requires it.
  */
+@UseGuards(AdminAuthGuard)
 @Controller('admin')
 export class AdminController {
   constructor(

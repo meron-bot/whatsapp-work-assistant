@@ -54,6 +54,7 @@ describe('ActionExecutorService', () => {
       prisma: {
         task: { create: jest.fn().mockResolvedValue({ id: 't1' }), update: jest.fn() },
         approval: { findUnique: jest.fn() },
+        documentDraft: { update: jest.fn() },
       },
       clarifications: { create: jest.fn().mockResolvedValue({ id: 'c1' }) },
       approvals: { create: jest.fn().mockResolvedValue({ id: 'a1' }) },
@@ -64,6 +65,7 @@ describe('ActionExecutorService', () => {
       calendar: { createEvent: jest.fn() },
       googleAuth: { isAuthorized: jest.fn().mockResolvedValue(false) },
       gmail: { sendEmail: jest.fn(), findContactEmail: jest.fn() },
+      docs: { createDocument: jest.fn() },
       audit: {
         success: jest.fn().mockResolvedValue(undefined),
         skipped: jest.fn().mockResolvedValue(undefined),
@@ -81,6 +83,7 @@ describe('ActionExecutorService', () => {
       deps.calendar,
       deps.googleAuth,
       deps.gmail,
+      deps.docs,
       deps.audit,
     );
   });
@@ -221,6 +224,46 @@ describe('ActionExecutorService', () => {
 
     expect(deps.gmail.sendEmail).not.toHaveBeenCalled();
     expect(result).toEqual({ type: 'email', sent: false, to: 'dana@client.com', reason: 'not_connected' });
+  });
+
+  // Documents must actually be DELIVERED: the result carries the body + missing
+  // facts so the reply can show them, and Google export is skipped when offline.
+  it('drafts a document, returns body + missing facts, skips Google when offline', async () => {
+    deps.documents.draft.mockResolvedValue({ id: 'd1', content: 'BODY', missingFacts: ['client name'] });
+    const results = await svc.executePlan({
+      sourceMessageId: 'm8',
+      plannerOutput: plan(action({ type: 'draft_document', title: 'Meeting Summary', confidence: 0.9 })),
+    });
+    expect(results[0]).toEqual({
+      type: 'document',
+      id: 'd1',
+      missingFacts: ['client name'],
+      content: 'BODY',
+      googleDocUrl: null,
+    });
+    expect(deps.docs.createDocument).not.toHaveBeenCalled();
+  });
+
+  it('exports the draft to Google Docs and returns the link when connected', async () => {
+    deps.googleAuth.isAuthorized.mockResolvedValue(true);
+    deps.documents.draft.mockResolvedValue({ id: 'd2', content: 'BODY', missingFacts: [] });
+    deps.docs.createDocument.mockResolvedValue({
+      id: 'gd1',
+      url: 'https://docs.google.com/document/d/gd1/edit',
+    });
+    const result = await svc.runLowRisk(
+      action({ type: 'draft_document', title: 'Report', confidence: 0.9 }),
+      { sourceMessageId: 'm9', plannerOutput: plan(action({})) },
+    );
+    expect(deps.docs.createDocument).toHaveBeenCalledWith('Report', 'BODY');
+    expect(result).toEqual({
+      type: 'document',
+      id: 'd2',
+      missingFacts: [],
+      content: 'BODY',
+      googleDocUrl: 'https://docs.google.com/document/d/gd1/edit',
+    });
+    expect(deps.prisma.documentDraft.update).toHaveBeenCalled();
   });
 
   it('ignores non-actionable actions and audits the skip', async () => {

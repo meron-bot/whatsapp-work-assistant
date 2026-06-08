@@ -4,9 +4,11 @@ import { env } from '../config/env';
 import { AppLogger } from '../logger/logger.service';
 import { GoogleAuthService } from '../google/google-auth.service';
 import { GoogleCalendarService } from '../google/google-calendar.service';
+import { ClarificationService } from '../clarifications/clarification.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReminderService } from '../reminders/reminder.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { isWithinActiveHours, isWorkday } from './quiet-hours';
 
 /**
  * Scheduled WhatsApp briefings + the per-minute reminder dispatcher. Times are
@@ -23,10 +25,12 @@ export class DailyPlanningService {
     private readonly reminders: ReminderService,
     private readonly calendar: GoogleCalendarService,
     private readonly googleAuth: GoogleAuthService,
+    private readonly clarifications: ClarificationService,
   ) {}
 
   @Cron('30 7 * * *', { timeZone: 'Asia/Jerusalem' })
   async morningPlan(): Promise<void> {
+    if (!isWorkday()) return; // quiet-hours gate: no proactive briefings on Fri/Sat
     const lines: string[] = ['בוקר טוב. תכנון להיום:'];
 
     const meetings = await this.todaysMeetings();
@@ -59,6 +63,7 @@ export class DailyPlanningService {
 
   @Cron('0 13 * * *', { timeZone: 'Asia/Jerusalem' })
   async middayCheckin(): Promise<void> {
+    if (!isWorkday()) return; // quiet-hours gate
     const urgent = await this.prisma.task.findMany({
       where: { status: { in: ['open', 'in_progress'] }, priority: 'urgent' },
     });
@@ -70,6 +75,7 @@ export class DailyPlanningService {
 
   @Cron('30 18 * * *', { timeZone: 'Asia/Jerusalem' })
   async endOfDay(): Promise<void> {
+    if (!isWorkday()) return; // quiet-hours gate
     const done = await this.prisma.task.count({
       where: { status: 'done', updatedAt: { gte: this.startOfToday() } },
     });
@@ -89,6 +95,77 @@ export class DailyPlanningService {
     await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, lines.join('\n'));
   }
 
+  /**
+   * Deadline-risk watcher (spec חלק ד׳ — "שומר דדליינים"). One consolidated daily
+   * nudge about tasks that are overdue or due within the next day, so nothing
+   * slips. Persistent by design: it re-nudges each working day until the task is
+   * closed. Gated by the quiet-hours window (Sun–Thu, working hours).
+   */
+  @Cron('0 9 * * *', { timeZone: 'Asia/Jerusalem' })
+  async deadlineRiskScan(now: Date = new Date()): Promise<void> {
+    if (!isWithinActiveHours(now)) return;
+    const horizon = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const atRisk = await this.prisma.task.findMany({
+      where: {
+        status: { in: ['open', 'in_progress'] },
+        dueDate: { not: null, lte: horizon },
+      },
+      orderBy: [{ dueDate: 'asc' }, { priority: 'desc' }],
+      take: 10,
+    });
+    if (!atRisk.length) return;
+    const lines = ['⏰ דדליינים שדורשים תשומת לב:'];
+    for (const t of atRisk) {
+      const overdue = t.dueDate ? t.dueDate < now : false;
+      const when = t.dueDate ? this.fmtDate(t.dueDate) : '';
+      lines.push(`• ${t.title} — ${overdue ? `באיחור (${when})` : `עד ${when}`}`);
+    }
+    await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, lines.join('\n'));
+  }
+
+  /**
+   * Follow-up watcher (spec חלק ד׳ — "שומר follow-up"). Nudges about open loops
+   * that are waiting on the owner or someone else once their nextCheckAt is due
+   * (defaulting to two days after the loop opened). Persistent: it bumps
+   * nextCheckAt forward a day so it re-nudges daily — never giving up silently —
+   * until the loop is closed. Gated by the quiet-hours window.
+   */
+  @Cron('0 10 * * *', { timeZone: 'Asia/Jerusalem' })
+  async followUpScan(now: Date = new Date()): Promise<void> {
+    if (!isWithinActiveHours(now)) return;
+    const waiting = await this.prisma.openLoop.findMany({
+      where: { status: { in: ['waiting_for_owner', 'waiting_for_other'] } },
+      orderBy: { createdAt: 'asc' },
+      take: 20,
+    });
+    const due = waiting.filter((l) => {
+      const checkAt = l.nextCheckAt ?? new Date(l.createdAt.getTime() + 2 * 24 * 60 * 60 * 1000);
+      return checkAt <= now;
+    });
+    if (!due.length) return;
+    const lines = ['🔁 ממתין למעקב/סגירה:'];
+    for (const l of due) lines.push(`• ${l.title}`);
+    await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, lines.join('\n'));
+    // Bump nextCheckAt so it re-nudges tomorrow (not on every scan) until closed.
+    await this.prisma.openLoop.updateMany({
+      where: { id: { in: due.map((l) => l.id) } },
+      data: { nextCheckAt: new Date(now.getTime() + 24 * 60 * 60 * 1000) },
+    });
+  }
+
+  /** Expire stale pending clarifications (default 3-day TTL) so the oldest-pending
+   *  matcher never routes a reply to a dead question. Internal cleanup — no
+   *  message is sent, so it isn't gated by quiet hours. */
+  @Cron('0 2 * * *', { timeZone: 'Asia/Jerusalem' })
+  async expireClarifications(): Promise<void> {
+    try {
+      const res = await this.clarifications.expireStale();
+      if (res.count) this.logger.log('Expired stale clarifications', { count: res.count });
+    } catch (e) {
+      this.logger.warn('Clarification expiry failed', { error: (e as Error).message });
+    }
+  }
+
   /** Reminder dispatcher — runs every minute. */
   @Cron(CronExpression.EVERY_MINUTE)
   async dispatchReminders(): Promise<void> {
@@ -106,12 +183,31 @@ export class DailyPlanningService {
       const events = await this.calendar.listForDay(new Date());
       return events.map((e) => {
         const start = e.start?.dateTime ?? e.start?.date ?? '';
-        return `• ${start} ${e.summary ?? ''}`.trim();
+        // Localize a dateTime to a readable HH:mm; all-day events (date only)
+        // have no time, so show them as-is.
+        const label = e.start?.dateTime ? this.fmtTime(start) : start;
+        return `• ${label} ${e.summary ?? ''}`.trim();
       });
     } catch (e) {
       this.logger.warn('Could not load calendar for daily plan', { error: (e as Error).message });
       return [];
     }
+  }
+
+  /** Readable local time (HH:mm) in the owner's timezone. */
+  private fmtTime(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleTimeString('he-IL', {
+      timeZone: env().OWNER_TIMEZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  /** Readable local date in the owner's timezone. */
+  private fmtDate(d: Date): string {
+    return d.toLocaleDateString('he-IL', { timeZone: env().OWNER_TIMEZONE });
   }
 
   private startOfToday(): Date {

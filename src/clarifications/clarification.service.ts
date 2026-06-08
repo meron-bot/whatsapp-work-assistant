@@ -17,6 +17,10 @@ export interface CreateClarificationInput {
   expiresAt?: Date | null;
 }
 
+/** Clarifications auto-expire after this many days if never answered, so the
+ *  oldest-pending matcher never gets stuck routing replies to a dead question. */
+const DEFAULT_TTL_DAYS = 3;
+
 /**
  * Owns the pending-clarification lifecycle: create + send the question, find the
  * open clarification a new message is answering, and record the answer.
@@ -30,6 +34,12 @@ export class ClarificationService {
   ) {}
 
   async create(input: CreateClarificationInput) {
+    // Default a 3-day TTL when the caller didn't specify one (undefined). An
+    // explicit null is honoured as "never expires".
+    const expiresAt =
+      input.expiresAt === undefined
+        ? new Date(Date.now() + DEFAULT_TTL_DAYS * 24 * 60 * 60 * 1000)
+        : input.expiresAt;
     const clarification = await this.prisma.pendingClarification.create({
       data: {
         question: input.question,
@@ -40,7 +50,7 @@ export class ClarificationService {
         relatedEntityType: input.relatedEntityType ?? null,
         relatedEntityId: input.relatedEntityId ?? null,
         plannerContext: (input.plannerContext ?? Prisma.JsonNull) as Prisma.InputJsonValue,
-        expiresAt: input.expiresAt ?? null,
+        expiresAt,
         status: 'pending',
       },
     });

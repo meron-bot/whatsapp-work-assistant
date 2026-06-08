@@ -332,4 +332,42 @@ describe('MessageProcessorService', () => {
 
     expect(d.whatsapp.sendText).toHaveBeenCalledWith('972500000000', 'הוספתי משימה.');
   });
+
+  // A drafted document must actually be DELIVERED: the Google Doc link is appended
+  // to the reply so the owner receives the draft instead of just "הכנתי טיוטה".
+  it('appends the Google Doc link when a document was drafted', async () => {
+    const d = makeDeps(baseRow({ textContent: 'תכין סיכום פגישה' }));
+    d.planner.plan.mockResolvedValue(emptyPlan({ replyToUser: 'הכנתי טיוטה.' }));
+    d.executor.executePlan.mockResolvedValue([
+      {
+        type: 'document',
+        id: 'd1',
+        missingFacts: [],
+        content: 'BODY',
+        googleDocUrl: 'https://docs.google.com/document/d/x/edit',
+      },
+    ]);
+
+    await d.svc.process('wamid.1');
+
+    const reply = d.whatsapp.sendText.mock.calls.find((c: any[]) => c[1].includes('הכנתי טיוטה.'));
+    expect(reply).toBeDefined();
+    expect(reply[1]).toContain('docs.google.com/document/d/x/edit');
+  });
+
+  // No Google connection → the body is delivered inline and missing facts listed.
+  it('delivers the draft body inline and lists missing facts when Google is offline', async () => {
+    const d = makeDeps(baseRow({ textContent: 'תכין סיכום פגישה' }));
+    d.planner.plan.mockResolvedValue(emptyPlan({ replyToUser: 'הכנתי טיוטה.' }));
+    d.executor.executePlan.mockResolvedValue([
+      { type: 'document', id: 'd1', missingFacts: ['client name'], content: 'BODY TEXT', googleDocUrl: null },
+    ]);
+
+    await d.svc.process('wamid.1');
+
+    const reply = d.whatsapp.sendText.mock.calls.find((c: any[]) => c[1].includes('הכנתי טיוטה.'));
+    expect(reply).toBeDefined();
+    expect(reply[1]).toContain('BODY TEXT');
+    expect(reply[1]).toContain('client name');
+  });
 });

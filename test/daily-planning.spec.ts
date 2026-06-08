@@ -1,0 +1,98 @@
+import { DailyPlanningService } from '../src/scheduler/daily-planning.service';
+
+process.env.OWNER_WHATSAPP_NUMBER = '972500000000';
+process.env.OWNER_TIMEZONE = 'Asia/Jerusalem';
+
+// Mon 2026-06-08 10:00 Israel (UTC+3) → inside the active window.
+const ACTIVE = new Date('2026-06-08T07:00:00Z');
+// Sat 2026-06-13 10:00 Israel → outside the window (weekend).
+const QUIET = new Date('2026-06-13T07:00:00Z');
+
+function makeDeps() {
+  const prisma = {
+    task: { findMany: jest.fn().mockResolvedValue([]) },
+    openLoop: { findMany: jest.fn().mockResolvedValue([]), updateMany: jest.fn().mockResolvedValue({}) },
+  };
+  const whatsapp = { sendText: jest.fn().mockResolvedValue('wamid.out') };
+  const reminders = { dispatchDue: jest.fn() };
+  const calendar = { listForDay: jest.fn() };
+  const googleAuth = { isAuthorized: jest.fn().mockResolvedValue(false) };
+  const clarifications = { expireStale: jest.fn().mockResolvedValue({ count: 0 }) };
+  const svc = new DailyPlanningService(
+    prisma as any,
+    whatsapp as any,
+    reminders as any,
+    calendar as any,
+    googleAuth as any,
+    clarifications as any,
+  );
+  return { svc, prisma, whatsapp, clarifications };
+}
+
+describe('DailyPlanningService — proactive watchers', () => {
+  describe('deadlineRiskScan', () => {
+    it('stays silent outside the quiet-hours window', async () => {
+      const { svc, prisma, whatsapp } = makeDeps();
+      await svc.deadlineRiskScan(QUIET);
+      expect(prisma.task.findMany).not.toHaveBeenCalled();
+      expect(whatsapp.sendText).not.toHaveBeenCalled();
+    });
+
+    it('stays silent when nothing is at risk', async () => {
+      const { svc, whatsapp } = makeDeps();
+      await svc.deadlineRiskScan(ACTIVE);
+      expect(whatsapp.sendText).not.toHaveBeenCalled();
+    });
+
+    it('nudges once, flagging overdue vs upcoming tasks', async () => {
+      const { svc, prisma, whatsapp } = makeDeps();
+      prisma.task.findMany.mockResolvedValue([
+        { title: 'להגיש דוח', dueDate: new Date('2026-06-07T07:00:00Z') }, // before ACTIVE → overdue
+        { title: 'להתקשר לספק', dueDate: new Date('2026-06-08T12:00:00Z') }, // after ACTIVE → upcoming
+      ]);
+      await svc.deadlineRiskScan(ACTIVE);
+      expect(whatsapp.sendText).toHaveBeenCalledTimes(1);
+      const body = whatsapp.sendText.mock.calls[0][1] as string;
+      expect(body).toContain('להגיש דוח');
+      expect(body).toContain('באיחור');
+      expect(body).toContain('להתקשר לספק');
+    });
+  });
+
+  describe('followUpScan', () => {
+    it('stays silent outside the quiet-hours window', async () => {
+      const { svc, prisma, whatsapp } = makeDeps();
+      await svc.followUpScan(QUIET);
+      expect(prisma.openLoop.findMany).not.toHaveBeenCalled();
+      expect(whatsapp.sendText).not.toHaveBeenCalled();
+    });
+
+    it('nudges about due loops and bumps their nextCheckAt forward', async () => {
+      const { svc, prisma, whatsapp } = makeDeps();
+      prisma.openLoop.findMany.mockResolvedValue([
+        // nextCheckAt already due
+        { id: 'l1', title: 'מחכה לתשובה מדנה', nextCheckAt: new Date('2026-06-08T05:00:00Z'), createdAt: ACTIVE },
+        // no nextCheckAt, created >2 days ago → due via the default threshold
+        { id: 'l2', title: 'אישור מהלקוח', nextCheckAt: null, createdAt: new Date('2026-06-01T07:00:00Z') },
+        // no nextCheckAt, created today → NOT due yet
+        { id: 'l3', title: 'חדש', nextCheckAt: null, createdAt: ACTIVE },
+      ]);
+      await svc.followUpScan(ACTIVE);
+      const body = whatsapp.sendText.mock.calls[0][1] as string;
+      expect(body).toContain('מחכה לתשובה מדנה');
+      expect(body).toContain('אישור מהלקוח');
+      expect(body).not.toContain('חדש');
+      expect(prisma.openLoop.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: { in: ['l1', 'l2'] } } }),
+      );
+    });
+  });
+
+  describe('expireClarifications', () => {
+    it('delegates to clarifications.expireStale', async () => {
+      const { svc, clarifications } = makeDeps();
+      await svc.expireClarifications();
+      expect(clarifications.expireStale).toHaveBeenCalled();
+    });
+  });
+});

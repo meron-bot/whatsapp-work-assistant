@@ -247,12 +247,50 @@ export class MessageProcessorService {
     // messaged the owner — don't send a contradicting "done" reply.
     const gated = results.some((r) => r.type === 'approval' || r.type === 'clarification');
     if (!gated && plan.replyToUser) {
-      // Truthfulness: if a task or calendar event was saved locally but never
-      // reached Google, don't let the optimistic "קבעתי"/"הוספתי" stand alone.
-      const notes = this.notSyncedNotes(results);
+      // Append honest, useful notes: not-synced warnings, the drafted document
+      // (link/body + missing facts), and calendar conflict/Meet info.
+      const notes = [this.notSyncedNotes(results), this.deliveryNotes(results)]
+        .filter(Boolean)
+        .join('\n\n');
       const reply = notes ? `${plan.replyToUser}\n\n${notes}` : plan.replyToUser;
       await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, reply);
     }
+  }
+
+  /** Deliver the actual artifacts a plan produced: the drafted document (Google
+   *  Doc link when connected, otherwise the body inline) plus any missing facts,
+   *  and calendar Meet links / overlap warnings. Returns '' when there is nothing
+   *  to add. */
+  private deliveryNotes(results: ExecutionResult[]): string {
+    const notes: string[] = [];
+    for (const r of results) {
+      if (r.type === 'document') notes.push(this.documentNote(r));
+      if (r.type === 'calendar') {
+        if (r.conflict) {
+          notes.push('⚠️ שים לב: השעה הזו חופפת לאירוע קיים ביומן. קבעתי בכל זאת — תקן אם צריך.');
+        }
+        if (r.meetLink) notes.push(`🔗 קישור Meet: ${r.meetLink}`);
+      }
+    }
+    return notes.filter(Boolean).join('\n\n');
+  }
+
+  /** Build the document-delivery note for a drafted document result. */
+  private documentNote(r: Extract<ExecutionResult, { type: 'document' }>): string {
+    const parts: string[] = [];
+    if (r.googleDocUrl) {
+      parts.push(`📄 הטיוטה מוכנה ב-Google Docs: ${r.googleDocUrl}`);
+    } else if (r.content) {
+      // No Google connection — send the body inline (truncated for WhatsApp).
+      const MAX = 1200;
+      const body = r.content.length > MAX ? `${r.content.slice(0, MAX)}\n…(קוצר)` : r.content;
+      parts.push(`📄 טיוטה:\n${body}`);
+      parts.push(`(לחיבור Google Docs לקבלת קישור לעריכה: ${env().APP_BASE_URL}/auth/google)`);
+    }
+    if (r.missingFacts.length) {
+      parts.push(`כדי להשלים חסר לי: ${r.missingFacts.join(', ')}`);
+    }
+    return parts.join('\n\n');
   }
 
   /** Build honest "didn't actually reach Google" notes for any results that were
@@ -361,7 +399,8 @@ export class MessageProcessorService {
           ? `אושר, אבל יומן Google לא מחובר אז האירוע לא נכנס ליומן בפועל.\n${this.calendarNotSyncedNote()}`
           : 'אושר. יצרתי את האירוע ביומן.';
       case 'document':
-        return 'אושר. הכנתי את הטיוטה.';
+        if (result.type !== 'document') return '';
+        return `אושר. הכנתי את הטיוטה.\n\n${this.documentNote(result)}`.trim();
       case 'email':
         if (result.type !== 'email') return '';
         if (result.sent) return `אושר. שלחתי את המייל ל-${result.to}.`;

@@ -123,6 +123,17 @@ export class LearnedFactService {
     });
   }
 
+  /** Deactivate specific facts by id (used by the weekly reflection job to prune
+   *  duplicates/obsolete facts). Returns how many were actually deactivated. */
+  async deactivate(ids: string[]): Promise<number> {
+    if (!ids.length) return 0;
+    const res = await this.prisma.learnedFact.updateMany({
+      where: { id: { in: ids }, active: true },
+      data: { active: false },
+    });
+    return res.count;
+  }
+
   /** Deactivate facts whose subject/content matches a free-text query. */
   async forget(query: string): Promise<number> {
     const q = query.trim();
