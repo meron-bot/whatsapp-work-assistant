@@ -125,7 +125,14 @@ export function buildPlannerUserPrompt(ctx: PlannerContextInput): string {
     lines.push(`Known facts about the owner (honor these; do not re-ask):\n${ctx.memories.join('\n')}`);
   }
   if (ctx.recentContext) {
-    lines.push(`Recent context:\n${ctx.recentContext}`);
+    lines.push(
+      `RECENT CONVERSATION (oldest first; "${ctx.ownerName ?? 'the owner'}" is the owner, ` +
+        `"פליי" is you, the assistant). The owner often supplies details across SEVERAL ` +
+        `messages. Read this whole thread and COMBINE everything already stated with the ` +
+        `incoming message before deciding anything is missing. Do NOT ask again for any ` +
+        `detail (dates, times, names, duration, location, platform) that already appears ` +
+        `above — if it is here, treat it as known.\n${ctx.recentContext}`,
+    );
   }
   if (ctx.toolFindings?.length) {
     lines.push(

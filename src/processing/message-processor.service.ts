@@ -31,6 +31,10 @@ import { NormalizedIncomingMessage } from '../whatsapp/whatsapp.types';
  *  of lookups (e.g. find a contact, then check availability). */
 const MAX_RESOLUTION_ROUNDS = 2;
 
+/** How many recent conversation turns (both directions) to replay to the planner
+ *  as context, so it combines what the owner already said instead of re-asking. */
+const HISTORY_TURNS = 16;
+
 @Injectable()
 export class MessageProcessorService {
   private readonly logger = new AppLogger('MessageProcessor');
@@ -104,6 +108,7 @@ export class MessageProcessorService {
       const pendingApproval = await this.approvals.findOldestPending();
       const pendingClarification = await this.clarifications.findOldestPending();
       const memories = await this.memory.retrieveForPrompt(ownerText ?? mediaSummary ?? '');
+      const recentContext = await this.buildRecentContext(row);
 
       const plannerCtx: PlannerContextInput = {
         text,
@@ -115,6 +120,7 @@ export class MessageProcessorService {
         ownerName: env().OWNER_NAME,
         knownProjects: await this.knownProjects(),
         memories,
+        recentContext,
         pendingApproval: pendingApproval
           ? { id: pendingApproval.id, description: pendingApproval.description }
           : null,
@@ -365,6 +371,40 @@ export class MessageProcessorService {
   private async knownProjects(): Promise<string[]> {
     const projects = await this.prisma.project.findMany({ select: { name: true } });
     return projects.map((p) => p.name);
+  }
+
+  /**
+   * Replay the last few conversation turns (both directions) as a plain
+   * transcript so the planner can see what the owner ALREADY said across earlier
+   * messages — the fix for the assistant re-asking the same questions. Inbound
+   * (owner) and outbound (assistant) messages both live in WhatsAppMessage; we
+   * tell them apart by the sender number. Voice-only turns (no textContent) are
+   * skipped. Returns undefined when there is no prior text.
+   */
+  private async buildRecentContext(current: {
+    id: string;
+    receivedAt: Date;
+  }): Promise<string | undefined> {
+    const rows = await this.prisma.whatsAppMessage.findMany({
+      where: {
+        id: { not: current.id },
+        receivedAt: { lte: current.receivedAt },
+        textContent: { not: null },
+      },
+      orderBy: { receivedAt: 'desc' },
+      take: HISTORY_TURNS,
+    });
+    if (!rows.length) return undefined;
+
+    const ownerDigits = env().OWNER_WHATSAPP_NUMBER.replace(/\D/g, '');
+    const ownerName = env().OWNER_NAME || 'הבעלים';
+    return rows
+      .reverse() // oldest first, so the transcript reads top-to-bottom
+      .map((r) => {
+        const who = r.fromNumber.replace(/\D/g, '') === ownerDigits ? ownerName : 'פליי';
+        return `${who}: ${r.textContent}`;
+      })
+      .join('\n');
   }
 
   private toNormalized(rawPayload: unknown, row: { fromNumber: string; toNumber: string; whatsappMessageId: string; messageType: string; textContent: string | null; mediaId: string | null; receivedAt: Date }): NormalizedIncomingMessage {

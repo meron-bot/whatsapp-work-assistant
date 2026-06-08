@@ -10,7 +10,8 @@ process.env.WHATSAPP_VERIFY_TOKEN = 'verify';
 process.env.DATABASE_URL = 'postgresql://x';
 
 describe('WhatsAppService', () => {
-  const svc = new WhatsAppService();
+  const prisma = { whatsAppMessage: { create: jest.fn().mockResolvedValue({}) } } as any;
+  const svc = new WhatsAppService(prisma);
 
   // (1) Webhook verification building block + (signature) — verifySignature
   it('verifies a valid HMAC signature and rejects an invalid one', () => {

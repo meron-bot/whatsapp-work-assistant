@@ -47,6 +47,7 @@ function makeDeps(row: any, claimCount = 1) {
       findUnique: jest.fn().mockResolvedValue(row),
       updateMany: jest.fn().mockResolvedValue({ count: claimCount }),
       update: jest.fn().mockResolvedValue({}),
+      findMany: jest.fn().mockResolvedValue([]),
     },
     project: { findMany: jest.fn().mockResolvedValue([]) },
     approval: { findUnique: jest.fn() },
@@ -263,6 +264,28 @@ describe('MessageProcessorService', () => {
       '[איש קשר "דני"] כתובת מייל: danny@x.com',
     ]);
     expect(d.whatsapp.sendText).toHaveBeenCalledWith('972500000000', 'קבעתי פגישה עם דני מחר ב-10:00.');
+  });
+
+  // Conversation memory: the planner is given the recent thread (both sides) so
+  // it stops re-asking for details the owner already provided in prior messages.
+  it('feeds recent conversation history to the planner so it stops re-asking', async () => {
+    const d = makeDeps(baseRow({ textContent: 'כל פגישה שעה' }));
+    // findMany returns newest-first (as the real query does); processor reverses.
+    d.prisma.whatsAppMessage.findMany.mockResolvedValue([
+      { id: 'r3', fromNumber: '972500000000', textContent: 'שלישי ורביעי', receivedAt: new Date(3) },
+      { id: 'r2', fromNumber: 'assistant', textContent: 'באיזה יום?', receivedAt: new Date(2) },
+      { id: 'r1', fromNumber: '972500000000', textContent: 'תקבע פגישה עם עומרי', receivedAt: new Date(1) },
+    ]);
+
+    await d.svc.process('wamid.1');
+
+    expect(d.planner.plan).toHaveBeenCalled();
+    const ctx = d.planner.plan.mock.calls[0][0];
+    expect(ctx.recentContext).toContain('תקבע פגישה עם עומרי');
+    expect(ctx.recentContext).toContain('שלישי ורביעי');
+    // owner turns labelled with the owner name, assistant turns as פליי
+    expect(ctx.recentContext).toContain('מירון: שלישי ורביעי');
+    expect(ctx.recentContext).toContain('פליי: באיזה יום?');
   });
 
   // (B5) When the planner's action is gated to approval/clarification, the

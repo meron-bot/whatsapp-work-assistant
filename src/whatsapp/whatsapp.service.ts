@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import axios from 'axios';
 import * as crypto from 'crypto';
 import { env } from '../config/env';
 import { AppLogger } from '../logger/logger.service';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   NormalizedIncomingMessage,
   WhatsAppIncomingRaw,
@@ -10,6 +12,10 @@ import {
 } from './whatsapp.types';
 
 const GRAPH_BASE = 'https://graph.facebook.com/v21.0';
+
+/** Sender marker stored on outbound (assistant) rows in WhatsAppMessage. It has
+ *  no digits, so isFromOwner() classifies it as NOT the owner — i.e. as פליי. */
+const ASSISTANT_SENDER = 'assistant';
 
 export interface ApprovalView {
   actionType: string;
@@ -31,6 +37,8 @@ export interface ClarificationView {
 @Injectable()
 export class WhatsAppService {
   private readonly logger = new AppLogger('WhatsAppService');
+
+  constructor(private readonly prisma: PrismaService) {}
 
   // ----- Inbound -----
 
@@ -134,7 +142,42 @@ export class WhatsAppService {
   }
 
   async sendText(to: string, body: string): Promise<string | null> {
-    return this.post({ to, type: 'text', text: { preview_url: false, body } });
+    const messageId = await this.post({ to, type: 'text', text: { preview_url: false, body } });
+    await this.recordOutbound(to, body, messageId);
+    return messageId;
+  }
+
+  /**
+   * Persist an outbound reply so the planner can later replay BOTH sides of the
+   * conversation. Without this, the assistant only ever saw the owner's latest
+   * message and kept re-asking for details already provided. Best-effort: a
+   * logging failure must never block messaging, and a message that was never
+   * delivered (no id back from the API) is not part of the visible thread.
+   */
+  private async recordOutbound(
+    to: string,
+    body: string,
+    messageId: string | null,
+  ): Promise<void> {
+    if (!messageId) return;
+    try {
+      await this.prisma.whatsAppMessage.create({
+        data: {
+          whatsappMessageId: messageId,
+          fromNumber: ASSISTANT_SENDER,
+          toNumber: to,
+          messageType: 'text',
+          rawPayload: {} as Prisma.InputJsonValue,
+          textContent: body,
+          status: 'processed',
+          processedAt: new Date(),
+        },
+      });
+    } catch (e) {
+      this.logger.warn('Failed to record outbound message for conversation history', {
+        error: (e as Error).message,
+      });
+    }
   }
 
   async sendTemplate(
