@@ -51,6 +51,17 @@ export class GoogleGmailService {
     return res.data.id ?? '';
   }
 
+  /** Send an email directly. MUST only be called after explicit owner approval.
+   *  Returns the sent message id. */
+  async sendEmail(input: DraftInput): Promise<string> {
+    const gmail = await this.api();
+    const res = await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: { raw: this.encodeMessage(input) },
+    });
+    return res.data.id ?? '';
+  }
+
   /** Send an existing draft. MUST only be called after explicit approval. */
   async sendDraft(draftId: string): Promise<string> {
     const gmail = await this.api();

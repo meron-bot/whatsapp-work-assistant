@@ -6,6 +6,11 @@ import { GoogleGmailService } from '../google/google-gmail.service';
 import { AppLogger } from '../logger/logger.service';
 import { LearnedFactService } from '../memory/learned-fact.service';
 import { ToolRequest } from '../planner/planner.schema';
+import { ToolName } from './tool-registry';
+import { WebResearchService } from './web-research.service';
+
+/** Executes one tool request and returns a short text finding. */
+type ToolHandler = (r: ToolRequest, sourceMessageId?: string) => Promise<string>;
 
 /**
  * The sub-agent layer. Runs the tools/sub-agents the planner requested (calendar
@@ -27,6 +32,7 @@ export class OrchestrationService {
     private readonly gmail: GoogleGmailService,
     private readonly googleAuth: GoogleAuthService,
     private readonly memory: LearnedFactService,
+    private readonly webResearch: WebResearchService,
   ) {}
 
   async resolve(requests: ToolRequest[], sourceMessageId?: string): Promise<string[]> {
@@ -42,21 +48,23 @@ export class OrchestrationService {
     return out;
   }
 
+  /**
+   * Routing from tool name to handler. Typed `Record<ToolName, ...>`, so adding
+   * a tool to the registry (which is where ToolName comes from) WITHOUT wiring
+   * up its execution here is a compile error — the two can never drift apart.
+   */
+  private readonly handlers: Record<ToolName, ToolHandler> = {
+    calendar_freebusy: (r) => this.freebusy(r.query),
+    calendar_agenda: (r) => this.agenda(r.query),
+    gmail_find_contact: (r, sourceMessageId) => this.findContact(r.query, sourceMessageId),
+    gmail_search: (r) => this.gmailSearch(r.query),
+    web_research: (r) => this.webResearch.research(r.query),
+  };
+
   private async resolveOne(r: ToolRequest, sourceMessageId?: string): Promise<string> {
-    switch (r.tool) {
-      case 'calendar_freebusy':
-        return this.freebusy(r.query);
-      case 'calendar_agenda':
-        return this.agenda(r.query);
-      case 'gmail_find_contact':
-        return this.findContact(r.query, sourceMessageId);
-      case 'gmail_search':
-        return this.gmailSearch(r.query);
-      case 'web_research':
-        return `[web_research "${r.query}"] לא זמין כרגע — הסתמך על הקשר, הנח הנחה סבירה, או שאל את מירון.`;
-      default:
-        return `[${(r as ToolRequest).tool}] כלי לא מוכר.`;
-    }
+    const handler = this.handlers[r.tool];
+    if (!handler) return `[${(r as ToolRequest).tool}] כלי לא מוכר.`;
+    return handler(r, sourceMessageId);
   }
 
   // --- calendar ---

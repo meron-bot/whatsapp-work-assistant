@@ -98,6 +98,14 @@ describe('action policy', () => {
     expect(d).toMatchObject({ kind: 'approval', riskLevel: 'high' });
   });
 
+  // Outbound email is ALWAYS gated, even if the planner forgot requiresApproval.
+  it('always requires approval for send_email regardless of the flag', () => {
+    expect(decideAction(action({ type: 'send_email', requiresApproval: false }))).toMatchObject({
+      kind: 'approval',
+      riskLevel: 'high',
+    });
+  });
+
   it('ignores non-actionable actions with a reason', () => {
     const d = decideAction(action({ type: 'ignore', description: 'small talk' }));
     expect(d).toEqual({ kind: 'ignore', reason: 'small talk' });

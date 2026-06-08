@@ -75,6 +75,11 @@ function makeDeps(row: any, claimCount = 1) {
     forget: jest.fn().mockResolvedValue(0),
   };
   const orchestrator = { resolve: jest.fn().mockResolvedValue([]) };
+  // Router is off by default (PLANNER_ROUTER_ENABLED unset → false), so classify
+  // is never called here; the mock just satisfies the constructor dependency.
+  const router = {
+    classify: jest.fn().mockResolvedValue({ intent: 'general', crossDomain: false, confidence: 0 }),
+  };
   const svc = new MessageProcessorService(
     prisma as any,
     whatsapp as any,
@@ -86,8 +91,9 @@ function makeDeps(row: any, claimCount = 1) {
     audit as any,
     memory as any,
     orchestrator as any,
+    router as any,
   );
-  return { svc, prisma, whatsapp, media, planner, executor, clarifications, approvals, audit, memory, orchestrator };
+  return { svc, prisma, whatsapp, media, planner, executor, clarifications, approvals, audit, memory, orchestrator, router };
 }
 
 describe('MessageProcessorService', () => {

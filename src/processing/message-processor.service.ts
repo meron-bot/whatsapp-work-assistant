@@ -10,6 +10,7 @@ import { LearnedFactService } from '../memory/learned-fact.service';
 import { MediaService } from '../media/media.service';
 import { OrchestrationService } from '../orchestration/orchestration.service';
 import { PlannerContextInput } from '../planner/planner.prompt';
+import { PlannerRouterService } from '../planner/router/planner-router.service';
 import { PlannerService } from '../planner/planner.service';
 import { PlannerAction, PlannerOutput, plannerActionSchema } from '../planner/planner.schema';
 import { PrismaService } from '../prisma/prisma.service';
@@ -50,6 +51,7 @@ export class MessageProcessorService {
     private readonly audit: AuditService,
     private readonly memory: LearnedFactService,
     private readonly orchestrator: OrchestrationService,
+    private readonly router: PlannerRouterService,
   ) {}
 
   async process(whatsappMessageId: string): Promise<void> {
@@ -132,6 +134,14 @@ export class MessageProcessorService {
             }
           : null,
       };
+
+      // Classify intent ONCE (behind a flag). The decision rides on plannerCtx,
+      // so every resolution-loop re-plan below reuses it for free — the router
+      // never runs twice and the specialist never switches mid-message. Flag off
+      // ⇒ route stays undefined ⇒ planner uses the general monolith (no change).
+      if (env().PLANNER_ROUTER_ENABLED) {
+        plannerCtx.route = await this.router.classify(plannerCtx);
+      }
 
       // Plan once, then run the resolve-before-ask loop: if the planner asked
       // for tools/sub-agents (calendar, Gmail, web), run them, feed the findings

@@ -1,12 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { AiService } from '../ai/ai.service';
 import { AppLogger } from '../logger/logger.service';
-import {
-  buildPlannerUserPrompt,
-  PLANNER_SYSTEM_PROMPT,
-  PlannerContextInput,
-} from './planner.prompt';
+import { buildPlannerUserPrompt, PlannerContextInput } from './planner.prompt';
 import { PlannerOutput, plannerOutputSchema } from './planner.schema';
+import {
+  buildSpecialistSystemPrompt,
+  resolveIntent,
+  SPECIALISTS,
+} from './specialists/specialist.registry';
+import { Specialist } from './specialists/specialist.types';
 
 /**
  * Turns a normalized incoming message into a validated plan. If the model
@@ -20,12 +22,16 @@ export class PlannerService {
   constructor(private readonly ai: AiService) {}
 
   async plan(ctx: PlannerContextInput): Promise<PlannerOutput> {
+    // The router (when enabled) picks a specialist; a missing/low-confidence/
+    // cross-domain route resolves to the general monolith — zero behaviour change.
+    const specialist = SPECIALISTS[resolveIntent(ctx.route)];
+
     // Cost tiering: try the cheap model first; escalate to the heavy model only
     // when the light one fails validation or returns a low-confidence result.
-    const light = await this.attempt(ctx, 'light');
+    const light = await this.attempt(ctx, specialist, 'light');
     if (light && light.confidence >= 0.6) return light;
 
-    const heavy = await this.attempt(ctx, 'heavy');
+    const heavy = await this.attempt(ctx, specialist, 'heavy');
     if (heavy) return heavy;
 
     // If the heavy model also failed, keep any valid (low-confidence) light
@@ -37,13 +43,14 @@ export class PlannerService {
   /** One planning attempt at a given cost tier. Returns null on invalid output. */
   private async attempt(
     ctx: PlannerContextInput,
+    specialist: Specialist,
     tier: 'light' | 'heavy',
   ): Promise<PlannerOutput | null> {
     const userPrompt = buildPlannerUserPrompt(ctx);
     let raw = '';
     try {
       raw = await this.ai.complete({
-        system: PLANNER_SYSTEM_PROMPT,
+        system: buildSpecialistSystemPrompt(specialist),
         messages: [{ role: 'user', content: userPrompt }],
         jsonMode: true,
         temperature: 0,

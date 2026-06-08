@@ -25,6 +25,17 @@ export function decideAction(action: PlannerAction): PolicyDecision {
     return { kind: 'clarify', reason: action.approvalReason ?? 'missing information' };
   }
 
+  // Outbound email is the most sensitive action and is ALWAYS gated by approval,
+  // regardless of whether the planner remembered to set requiresApproval. The
+  // real send only happens after the owner approves (runLowRisk -> sendEmail).
+  if (action.type === 'send_email') {
+    return {
+      kind: 'approval',
+      riskLevel: 'high',
+      reason: action.approvalReason ?? 'outbound email',
+    };
+  }
+
   // Graduated policy: the planner marks outward-facing / risky actions
   // requiresApproval=true (external email, inviting clients, money, deletions).
   // Internal/reversible actions — including inviting people the owner already

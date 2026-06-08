@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TOOL_NAMES } from '../orchestration/tool-registry';
 
 /**
  * Strict Zod schema for planner output. Any AI response that does not match is
@@ -12,6 +13,7 @@ export const actionTypeEnum = z.enum([
   'create_reminder',
   'draft_document',
   'save_file',
+  'send_email',
   'ask_clarification',
   'request_approval',
   'ignore',
@@ -45,20 +47,12 @@ export const missingInformationSchema = z.object({
  * Sub-agent / tool the planner can invoke to resolve missing context BEFORE
  * asking the owner. The processor runs each request, feeds the findings back,
  * and re-plans. This is the heart of "solve before you ask".
- *   - calendar_freebusy: free/busy windows for a day or range (query = ISO date,
- *     "start/end" ISO range, or empty for the next 7 days).
- *   - calendar_agenda: the actual events for a day/range (same query format).
- *   - gmail_find_contact: find a person's email address (query = their name).
- *   - gmail_search: search the owner's mail for facts (query = Gmail search text).
- *   - web_research: research a question on the web (query = the question).
+ *
+ * The set of tools is defined ONCE in the tool registry
+ * (../orchestration/tool-registry); this enum is derived from it so the schema,
+ * the prompt, and the executor can never drift apart.
  */
-export const toolRequestEnum = z.enum([
-  'calendar_freebusy',
-  'calendar_agenda',
-  'gmail_find_contact',
-  'gmail_search',
-  'web_research',
-]);
+export const toolRequestEnum = z.enum(TOOL_NAMES);
 
 export const toolRequestSchema = z.object({
   tool: toolRequestEnum,

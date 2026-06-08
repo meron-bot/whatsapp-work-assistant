@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MemoryModule } from '../memory/memory.module';
 import { OrchestrationService } from './orchestration.service';
+import { WebResearchService } from './web-research.service';
 
 /**
  * The sub-agent / tool layer the planner can invoke to resolve context before
@@ -9,7 +10,7 @@ import { OrchestrationService } from './orchestration.service';
  */
 @Module({
   imports: [MemoryModule],
-  providers: [OrchestrationService],
+  providers: [OrchestrationService, WebResearchService],
   exports: [OrchestrationService],
 })
 export class OrchestrationModule {}

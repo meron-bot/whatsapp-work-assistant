@@ -55,6 +55,23 @@ const envSchema = z.object({
   ANTHROPIC_MODEL_LIGHT: z.string().default('claude-haiku-4-5-20251001'),
   ANTHROPIC_MODEL_HEAVY: z.string().default('claude-sonnet-4-6'),
 
+  // Planner router: when true, a cheap classification call picks a per-intent
+  // specialist; otherwise every message uses the general monolith (zero change).
+  // NOTE: z.coerce.boolean() treats any non-empty string (incl. "false") as true,
+  // so compare explicitly instead.
+  PLANNER_ROUTER_ENABLED: z
+    .string()
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
+
+  // Web research sub-agent. 'none' (default) keeps web_research disabled and the
+  // planner falls back to assume/ask. Set a provider + its key to enable real
+  // web search. Brave and Tavily both return cheap JSON; pick whichever you have.
+  WEB_SEARCH_PROVIDER: z.enum(['none', 'brave', 'tavily']).default('none'),
+  BRAVE_SEARCH_API_KEY: z.string().optional().default(''),
+  TAVILY_API_KEY: z.string().optional().default(''),
+
   STORAGE_PROVIDER: z.enum(['local', 'drive', 's3']).default('local'),
   LOCAL_STORAGE_PATH: z.string().default('./storage'),
 
