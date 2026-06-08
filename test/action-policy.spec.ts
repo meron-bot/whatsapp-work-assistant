@@ -36,24 +36,38 @@ describe('action policy', () => {
     expect(d.kind).toBe('clarify');
   });
 
-  it('clarifies medium-confidence task (0.60-0.84) instead of auto-executing', () => {
-    const d = decideAction(action({ confidence: 0.7 }));
-    expect(d.kind).toBe('clarify');
+  it('clarifies a task below 0.70 but auto-executes at/above it', () => {
+    // Graduated policy: reversible tasks execute once confidence reaches
+    // CONFIDENCE_EXECUTE (0.70); below that (but >= 0.50) we clarify.
+    expect(decideAction(action({ confidence: 0.6 })).kind).toBe('clarify');
+    expect(decideAction(action({ confidence: 0.7 })).kind).toBe('execute');
   });
 
-  // (17) Calendar approval policy — with participants => high-risk approval
-  it('requires approval for a calendar event with participants', () => {
-    const d = decideAction(
+  // (17) Calendar approval policy — presence of participants alone does NOT gate;
+  // we trust the planner's requiresApproval flag (set for external/client invites).
+  it('auto-executes a calendar event with participants unless flagged for approval', () => {
+    const internal = decideAction(
       action({ type: 'create_calendar_event', startTime: '2026-06-03T09:30:00+03:00', participants: ['yossi@example.com'] }),
     );
-    expect(d).toMatchObject({ kind: 'approval', riskLevel: 'high' });
+    expect(internal).toEqual({ kind: 'execute' });
+
+    const external = decideAction(
+      action({
+        type: 'create_calendar_event',
+        startTime: '2026-06-03T09:30:00+03:00',
+        participants: ['client@external.com'],
+        requiresApproval: true,
+        approvalReason: 'external invite',
+      }),
+    );
+    expect(external).toMatchObject({ kind: 'approval', riskLevel: 'high' });
   });
 
-  it('requires medium approval for a calendar event without participants', () => {
+  it('auto-executes a private calendar event with an explicit time', () => {
     const d = decideAction(
       action({ type: 'create_calendar_event', startTime: '2026-06-03T09:30:00+03:00' }),
     );
-    expect(d).toMatchObject({ kind: 'approval', riskLevel: 'medium' });
+    expect(d).toEqual({ kind: 'execute' });
   });
 
   it('clarifies a calendar event with no explicit time', () => {

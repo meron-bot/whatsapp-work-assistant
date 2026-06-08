@@ -95,15 +95,20 @@ describe('ActionExecutorService', () => {
     expect(deps.audit.success).toHaveBeenCalledWith('task.created', expect.any(Object), expect.any(Object));
   });
 
-  // (17) Calendar approval policy -> creates an approval, not an event
-  it('creates a pending approval for a calendar event with participants', async () => {
+  // (17) Calendar approval policy -> an OUTWARD-FACING event (flagged by the
+  // planner) becomes an approval, not an event. Internal events auto-execute
+  // under the graduated policy, so the trigger is requiresApproval, not the mere
+  // presence of participants.
+  it('creates a pending approval for a calendar event flagged for approval', async () => {
     const results = await svc.executePlan({
       sourceMessageId: 'm2',
       plannerOutput: plan(
         action({
           type: 'create_calendar_event',
           startTime: '2026-06-03T09:30:00+03:00',
-          participants: ['yossi@example.com'],
+          participants: ['client@external.com'],
+          requiresApproval: true,
+          approvalReason: 'external invite',
         }),
       ),
     });
