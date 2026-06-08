@@ -37,7 +37,10 @@ function plan(a: PlannerAction): PlannerOutput {
     missingInformation: [],
     needsClarification: false,
     clarificationQuestion: null,
+    toolRequests: [],
+    assumptions: [],
     actions: [a],
+    memoryWrites: [],
     replyToUser: '',
   };
 }
