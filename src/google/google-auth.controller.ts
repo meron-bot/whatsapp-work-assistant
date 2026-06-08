@@ -2,6 +2,7 @@ import { Controller, Get, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { AppLogger } from '../logger/logger.service';
 import { GoogleAuthService } from './google-auth.service';
+import { google } from 'googleapis';
 
 @Controller('auth/google')
 export class GoogleAuthController {
@@ -12,6 +13,22 @@ export class GoogleAuthController {
   @Get()
   redirect(@Res() res: Response): void {
     res.redirect(this.auth.generateAuthUrl());
+  }
+
+  /** Quick liveness check: is a Google refresh token stored and does it still work?
+   *  Open in a browser to verify the connection without reading server logs. */
+  @Get('status')
+  async status(): Promise<{ connected: boolean; email?: string; error?: string }> {
+    const authorized = await this.auth.isAuthorized();
+    if (!authorized) return { connected: false, error: 'No token stored. Visit /auth/google to connect.' };
+    try {
+      const client = await this.auth.getAuthorizedClient();
+      const oauth2 = google.oauth2({ version: 'v2', auth: client });
+      const info = await oauth2.userinfo.get();
+      return { connected: true, email: info.data.email ?? undefined };
+    } catch (e) {
+      return { connected: false, error: (e as Error).message };
+    }
   }
 
   @Get('callback')

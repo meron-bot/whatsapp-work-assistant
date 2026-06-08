@@ -63,6 +63,7 @@ describe('ActionExecutorService', () => {
       tasks: { createTask: jest.fn() },
       calendar: { createEvent: jest.fn() },
       googleAuth: { isAuthorized: jest.fn().mockResolvedValue(false) },
+      gmail: { sendEmail: jest.fn(), findContactEmail: jest.fn() },
       audit: {
         success: jest.fn().mockResolvedValue(undefined),
         skipped: jest.fn().mockResolvedValue(undefined),
@@ -79,6 +80,7 @@ describe('ActionExecutorService', () => {
       deps.tasks,
       deps.calendar,
       deps.googleAuth,
+      deps.gmail,
       deps.audit,
     );
   });
@@ -89,10 +91,46 @@ describe('ActionExecutorService', () => {
       sourceMessageId: 'm1',
       plannerOutput: plan(action({ confidence: 0.95 })),
     });
-    expect(results[0]).toEqual({ type: 'task', id: 't1' });
+    // Google not connected (isAuthorized=false) -> saved locally, googleSynced=false.
+    expect(results[0]).toEqual({ type: 'task', id: 't1', googleSynced: false });
     expect(deps.prisma.task.create).toHaveBeenCalled();
+    expect(deps.tasks.createTask).not.toHaveBeenCalled();
     expect(deps.openLoops.create).toHaveBeenCalled();
     expect(deps.audit.success).toHaveBeenCalledWith('task.created', expect.any(Object), expect.any(Object));
+  });
+
+  // Honesty: when Google IS connected and the sync succeeds, the result reports
+  // googleSynced=true and the local task is linked to its Google Tasks id.
+  it('syncs a task to Google Tasks and reports googleSynced=true when connected', async () => {
+    deps.googleAuth.isAuthorized.mockResolvedValue(true);
+    deps.tasks.createTask.mockResolvedValue('gtask-1');
+
+    const results = await svc.executePlan({
+      sourceMessageId: 'm1',
+      plannerOutput: plan(action({ confidence: 0.95 })),
+    });
+
+    expect(deps.tasks.createTask).toHaveBeenCalled();
+    expect(deps.prisma.task.update).toHaveBeenCalledWith({
+      where: { id: 't1' },
+      data: { googleTaskId: 'gtask-1' },
+    });
+    expect(results[0]).toEqual({ type: 'task', id: 't1', googleSynced: true });
+  });
+
+  // Honesty: a Google Tasks API failure must NOT be reported as synced — the
+  // local task is still created, but googleSynced stays false so the reply can
+  // tell the owner it never reached Google.
+  it('reports googleSynced=false when the Google Tasks sync throws', async () => {
+    deps.googleAuth.isAuthorized.mockResolvedValue(true);
+    deps.tasks.createTask.mockRejectedValue(new Error('token revoked'));
+
+    const results = await svc.executePlan({
+      sourceMessageId: 'm1',
+      plannerOutput: plan(action({ confidence: 0.95 })),
+    });
+
+    expect(results[0]).toEqual({ type: 'task', id: 't1', googleSynced: false });
   });
 
   // (17) Calendar approval policy -> an OUTWARD-FACING event (flagged by the
@@ -128,6 +166,61 @@ describe('ActionExecutorService', () => {
     expect(deps.openLoops.create).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'waiting_for_owner' }),
     );
+  });
+
+  // Outbound email is always gated: even with requiresApproval=false, a send_email
+  // becomes a pending approval and nothing is sent.
+  it('routes send_email through approval instead of sending immediately', async () => {
+    const results = await svc.executePlan({
+      sourceMessageId: 'm5',
+      plannerOutput: plan(
+        action({
+          type: 'send_email',
+          title: 'עדכון ללקוח',
+          participants: ['dana@client.com'],
+          requiresApproval: false,
+        }),
+      ),
+    });
+    expect(results[0]).toEqual({ type: 'approval', id: 'a1' });
+    expect(deps.gmail.sendEmail).not.toHaveBeenCalled();
+  });
+
+  // Honesty: an approved email is only reported sent when the Gmail API confirms.
+  it('sends an approved email and reports sent=true when connected', async () => {
+    deps.googleAuth.isAuthorized.mockResolvedValue(true);
+    deps.gmail.sendEmail.mockResolvedValue('msg-1');
+
+    const result = await svc.runLowRisk(
+      action({
+        type: 'send_email',
+        title: 'נושא',
+        description: 'גוף',
+        participants: ['dana@client.com'],
+      }),
+      { sourceMessageId: 'm6', plannerOutput: plan(action({})) },
+    );
+
+    expect(deps.gmail.sendEmail).toHaveBeenCalledWith({
+      to: 'dana@client.com',
+      subject: 'נושא',
+      body: 'גוף',
+    });
+    expect(result).toEqual({ type: 'email', sent: true, to: 'dana@client.com' });
+  });
+
+  // Honesty: if Gmail is not connected, an approved email must NOT be reported as
+  // sent — sent=false with reason so the reply tells the truth.
+  it('reports sent=false when Gmail is not connected', async () => {
+    deps.googleAuth.isAuthorized.mockResolvedValue(false);
+
+    const result = await svc.runLowRisk(
+      action({ type: 'send_email', participants: ['dana@client.com'] }),
+      { sourceMessageId: 'm7', plannerOutput: plan(action({})) },
+    );
+
+    expect(deps.gmail.sendEmail).not.toHaveBeenCalled();
+    expect(result).toEqual({ type: 'email', sent: false, to: 'dana@client.com', reason: 'not_connected' });
   });
 
   it('ignores non-actionable actions and audits the skip', async () => {

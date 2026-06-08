@@ -237,14 +237,33 @@ export class MessageProcessorService {
     // messaged the owner — don't send a contradicting "done" reply.
     const gated = results.some((r) => r.type === 'approval' || r.type === 'clarification');
     if (!gated && plan.replyToUser) {
-      // Truthfulness: if a calendar event was saved locally but never reached
-      // Google Calendar, don't let the optimistic "קבעתי" stand alone.
-      const calendarNotSynced = results.some((r) => r.type === 'calendar' && !r.googleSynced);
-      const reply = calendarNotSynced
-        ? `${plan.replyToUser}\n\n${this.calendarNotSyncedNote()}`
-        : plan.replyToUser;
+      // Truthfulness: if a task or calendar event was saved locally but never
+      // reached Google, don't let the optimistic "קבעתי"/"הוספתי" stand alone.
+      const notes = this.notSyncedNotes(results);
+      const reply = notes ? `${plan.replyToUser}\n\n${notes}` : plan.replyToUser;
       await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, reply);
     }
+  }
+
+  /** Build honest "didn't actually reach Google" notes for any results that were
+   *  saved locally but not synced, so the owner is never misled into thinking a
+   *  task is in Google Tasks or an event is in their calendar. Returns '' when
+   *  everything synced (or there was nothing to sync). */
+  private notSyncedNotes(results: ExecutionResult[]): string {
+    const notes: string[] = [];
+    if (results.some((r) => r.type === 'task' && !r.googleSynced)) {
+      notes.push(this.tasksNotSyncedNote());
+    }
+    if (results.some((r) => r.type === 'calendar' && !r.googleSynced)) {
+      notes.push(this.calendarNotSyncedNote());
+    }
+    return notes.join('\n\n');
+  }
+
+  /** Honest note appended when a task was saved locally but Google Tasks is not
+   *  connected, so the owner is not misled into thinking it's in Google Tasks. */
+  private tasksNotSyncedNote(): string {
+    return `⚠️ שמרתי את המשימה אצלי, אבל Google Tasks לא מחובר — המשימה לא נכנסה ל-Google Tasks שלך בפועל. לחיבור: ${env().APP_BASE_URL}/auth/google`;
   }
 
   /** Honest note appended when an event was saved locally but Google Calendar is
@@ -322,7 +341,9 @@ export class MessageProcessorService {
   private approvedReply(result: ExecutionResult | null): string {
     switch (result?.type) {
       case 'task':
-        return 'אושר. יצרתי את המשימה.';
+        return result && result.type === 'task' && !result.googleSynced
+          ? `אושר. יצרתי את המשימה אצלי, אבל Google Tasks לא מחובר אז היא לא נכנסה ל-Google Tasks בפועל.\n${this.tasksNotSyncedNote()}`
+          : 'אושר. יצרתי את המשימה ב-Google Tasks.';
       case 'reminder':
         return 'אושר. קבעתי תזכורת.';
       case 'calendar':
@@ -331,6 +352,12 @@ export class MessageProcessorService {
           : 'אושר. יצרתי את האירוע ביומן.';
       case 'document':
         return 'אושר. הכנתי את הטיוטה.';
+      case 'email':
+        if (result.type !== 'email') return '';
+        if (result.sent) return `אושר. שלחתי את המייל ל-${result.to}.`;
+        return result.reason === 'not_connected'
+          ? `אישרת, אבל Gmail לא מחובר אז המייל לא נשלח. לחיבור: ${env().APP_BASE_URL}/auth/google`
+          : 'אישרת, אבל לא הצלחתי לשלוח את המייל. בדוק את הלוג או נסה שוב.';
       case 'clarification':
         return ''; // a clarification question was already sent
       default:

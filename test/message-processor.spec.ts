@@ -188,7 +188,7 @@ describe('MessageProcessorService', () => {
         },
       },
     });
-    d.executor.runLowRisk.mockResolvedValue({ type: 'task', id: 't9' });
+    d.executor.runLowRisk.mockResolvedValue({ type: 'task', id: 't9', googleSynced: true });
 
     await d.svc.process('wamid.1');
 
@@ -298,5 +298,32 @@ describe('MessageProcessorService', () => {
     await d.svc.process('wamid.1');
 
     expect(d.whatsapp.sendText).not.toHaveBeenCalledWith('972500000000', 'שלחתי את המייל.');
+  });
+
+  // Truthfulness: a task saved locally but NOT synced to Google Tasks must not be
+  // reported as done — the honest "Google Tasks לא מחובר" note is appended so the
+  // owner knows it isn't actually in Google Tasks.
+  it('appends an honest note when a task did not reach Google Tasks', async () => {
+    const d = makeDeps(baseRow({ textContent: 'תוסיף משימה להתקשר לספק' }));
+    d.planner.plan.mockResolvedValue(emptyPlan({ replyToUser: 'הוספתי משימה.' }));
+    d.executor.executePlan.mockResolvedValue([{ type: 'task', id: 't1', googleSynced: false }]);
+
+    await d.svc.process('wamid.1');
+
+    const reply = d.whatsapp.sendText.mock.calls.find((c: any[]) => c[1].includes('הוספתי משימה.'));
+    expect(reply).toBeDefined();
+    expect(reply[1]).toContain('Google Tasks לא מחובר');
+    expect(reply[1]).toContain('/auth/google');
+  });
+
+  // A task that DID sync is acknowledged with the planner's reply, no warning.
+  it('does not append a note when the task synced to Google Tasks', async () => {
+    const d = makeDeps(baseRow({ textContent: 'תוסיף משימה להתקשר לספק' }));
+    d.planner.plan.mockResolvedValue(emptyPlan({ replyToUser: 'הוספתי משימה.' }));
+    d.executor.executePlan.mockResolvedValue([{ type: 'task', id: 't1', googleSynced: true }]);
+
+    await d.svc.process('wamid.1');
+
+    expect(d.whatsapp.sendText).toHaveBeenCalledWith('972500000000', 'הוספתי משימה.');
   });
 });

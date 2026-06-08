@@ -73,6 +73,24 @@ export class GoogleAuthService {
     const enc = (row.value as { enc: string }).enc;
     const client = this.baseClient();
     client.setCredentials({ refresh_token: decrypt(enc) });
+
+    // Google occasionally rotates the refresh token (especially when the app is
+    // in "Testing" mode or after long idle periods). When it does, the old token
+    // becomes invalid immediately. We listen for any new token and persist it so
+    // the connection never silently breaks.
+    client.on('tokens', (tokens) => {
+      if (tokens.refresh_token) {
+        this.prisma.agentMemory
+          .upsert({
+            where: { key: TOKEN_KEY },
+            create: { key: TOKEN_KEY, value: { enc: encrypt(tokens.refresh_token) }, source: 'oauth' },
+            update: { value: { enc: encrypt(tokens.refresh_token) } },
+          })
+          .then(() => this.logger.log('Google refresh token rotated and saved'))
+          .catch((e) => this.logger.warn('Failed to save rotated refresh token', { error: (e as Error).message }));
+      }
+    });
+
     return client;
   }
 }

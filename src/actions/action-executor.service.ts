@@ -8,6 +8,7 @@ import { DocumentAgentService, DocumentType } from '../documents/document-agent.
 import { GoogleTasksService } from '../google/google-tasks.service';
 import { GoogleCalendarService } from '../google/google-calendar.service';
 import { GoogleAuthService } from '../google/google-auth.service';
+import { GoogleGmailService } from '../google/google-gmail.service';
 import { OpenLoopService } from '../open-loops/open-loop.service';
 import { PlannerAction, PlannerOutput } from '../planner/planner.schema';
 import { PrismaService } from '../prisma/prisma.service';
@@ -20,12 +21,18 @@ export interface ExecuteContext {
 }
 
 export type ExecutionResult =
-  | { type: 'task'; id: string }
+  // googleSynced=false means we saved a local record but it did NOT reach the
+  // owner's Google account (not connected / API error) — the reply must say so,
+  // instead of letting the planner's optimistic "added to Google Tasks" stand.
+  | { type: 'task'; id: string; googleSynced: boolean }
   | { type: 'reminder'; id: string }
   // googleSynced=false means we saved a local record but it did NOT reach the
   // owner's Google Calendar (not connected / API error) — the reply must say so.
   | { type: 'calendar'; id: string; googleSynced: boolean }
   | { type: 'document'; id: string; missingFacts: string[] }
+  // sent=false means the approved email did NOT go out (Gmail not connected or
+  // the API failed) — the reply MUST say so instead of claiming "נשלח".
+  | { type: 'email'; sent: boolean; to: string | null; reason?: 'not_connected' | 'send_failed' }
   | { type: 'clarification'; id: string }
   | { type: 'approval'; id: string }
   | { type: 'ignored'; reason: string };
@@ -58,6 +65,7 @@ export class ActionExecutorService {
     private readonly tasks: GoogleTasksService,
     private readonly calendar: GoogleCalendarService,
     private readonly googleAuth: GoogleAuthService,
+    private readonly gmail: GoogleGmailService,
     private readonly audit: AuditService,
   ) {}
 
@@ -140,6 +148,8 @@ export class ActionExecutorService {
         return this.createCalendarEvent(action, ctx);
       case 'draft_document':
         return this.createDocumentDraft(action, ctx);
+      case 'send_email':
+        return this.sendEmail(action, ctx);
       case 'save_file':
         // Media is already persisted on ingest; just acknowledge + audit.
         await this.audit.success('action.save_file', { action }, {
@@ -164,15 +174,21 @@ export class ActionExecutorService {
       },
     });
 
-    // Best-effort sync to Google Tasks (never blocks the local task).
+    // Best-effort sync to Google Tasks (never blocks the local task). We track
+    // whether it actually landed in Google so the reply can be truthful instead
+    // of claiming "added to Google Tasks" when only a local row was written.
+    let googleSynced = false;
     if (await this.googleAuth.isAuthorized()) {
       try {
         const googleTaskId = await this.tasks.createTask(
           action.title,
           action.description,
-          action.dueDate,
+          // Google Tasks needs an RFC 3339 timestamp; send the parsed date (or
+          // nothing) rather than an unvalidated string that would 400 silently.
+          dueDate ? dueDate.toISOString() : null,
         );
         await this.prisma.task.update({ where: { id: task.id }, data: { googleTaskId } });
+        googleSynced = true;
       } catch (e) {
         this.logger.warn('Google Tasks sync failed', { error: (e as Error).message });
       }
@@ -186,11 +202,11 @@ export class ActionExecutorService {
       linkedTaskId: task.id,
       sourceMessageId: ctx.sourceMessageId,
     });
-    await this.audit.success('task.created', { taskId: task.id }, {
+    await this.audit.success('task.created', { taskId: task.id, googleSynced }, {
       entityType: 'Task',
       entityId: task.id,
     });
-    return { type: 'task', id: task.id };
+    return { type: 'task', id: task.id, googleSynced };
   }
 
   private async createReminder(
@@ -319,8 +335,57 @@ export class ActionExecutorService {
     return { type: 'document', id: draft.id, missingFacts: draft.missingFacts };
   }
 
+  /**
+   * Actually send an approved email. Reaching here means the owner already
+   * approved (policy forces send_email through approval). We resolve a real
+   * recipient, and only report success if the Gmail API confirmed the send —
+   * never claim "נשלח" on a local no-op (truthful reporting).
+   */
+  private async sendEmail(action: PlannerAction, ctx: ExecuteContext): Promise<ExecutionResult> {
+    if (!(await this.googleAuth.isAuthorized())) {
+      await this.audit.failed('email.send', { action }, 'gmail not connected');
+      return { type: 'email', sent: false, to: action.participants[0] ?? null, reason: 'not_connected' };
+    }
+
+    const to = await this.resolveRecipient(action);
+    if (!to) {
+      // No verified address — don't guess one; ask the owner for it.
+      return this.askForMissing(action, ctx, 'למי לשלוח את המייל? אני צריך כתובת אימייל מדויקת.');
+    }
+
+    const subject = (action.toolPayload?.subject as string) ?? action.title;
+    const body =
+      (action.toolPayload?.body as string) ?? action.description ?? action.title;
+    try {
+      const id = await this.gmail.sendEmail({ to, subject, body });
+      await this.audit.success('email.sent', { id, to }, { entityType: 'Email', entityId: id });
+      return { type: 'email', sent: true, to };
+    } catch (e) {
+      this.logger.warn('Email send failed', { error: (e as Error).message });
+      await this.audit.failed('email.send', { action, to }, (e as Error).message);
+      return { type: 'email', sent: false, to, reason: 'send_failed' };
+    }
+  }
+
+  /** Resolve a real email address for the first participant: use it directly if
+   *  it's already an address, otherwise look it up in the owner's mail. Returns
+   *  null when nothing convincing is found (caller asks the owner). */
+  private async resolveRecipient(action: PlannerAction): Promise<string | null> {
+    const first = action.participants[0]?.trim();
+    if (!first) return null;
+    if (first.includes('@')) return first;
+    const found = await this.gmail.findContactEmail(first);
+    return found?.email ?? null;
+  }
+
   private describeProposed(action: PlannerAction): string {
     const parts: string[] = [];
+    if (action.type === 'send_email') {
+      const subject = (action.toolPayload?.subject as string) ?? action.title;
+      const body = (action.toolPayload?.body as string) ?? action.description ?? '';
+      parts.push(`נושא: ${subject}`);
+      if (body) parts.push(`תוכן:\n${body}`);
+    }
     if (action.startTime) parts.push(`מתי: ${action.startTime}`);
     if (action.participants.length) parts.push(`משתתפים: ${action.participants.join(', ')}`);
     if (action.project) parts.push(`פרויקט: ${action.project}`);
