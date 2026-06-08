@@ -203,6 +203,33 @@ describe('MessageProcessorService', () => {
     expect(d.whatsapp.sendText).toHaveBeenCalledWith('972500000000', expect.stringContaining('אושר'));
   });
 
+  // Efficiency: a clear approve is handled deterministically — NO router and NO
+  // planner call (the most common reply must not cost two model calls).
+  it('approves deterministically without calling the router or planner', async () => {
+    const d = makeDeps(baseRow({ textContent: 'אשר' }));
+    d.approvals.findOldestPending.mockResolvedValue({ id: 'a1', description: 'send email', status: 'pending' });
+    d.approvals.classifyResponse.mockReturnValue('approved');
+    d.prisma.approval.findUnique.mockResolvedValue({
+      id: 'a1',
+      sourceMessageId: 'row0',
+      proposedPayload: {
+        action: {
+          type: 'create_task', title: 'x', description: null, confidence: 0.9,
+          priority: 'medium', dueDate: null, startTime: null, endTime: null, participants: [],
+          project: null, client: null, requiresApproval: true, approvalReason: 'external',
+          missingFields: [], toolPayload: {},
+        },
+      },
+    });
+    d.executor.runLowRisk.mockResolvedValue({ type: 'task', id: 't9', googleSynced: true });
+
+    await d.svc.process('wamid.1');
+
+    expect(d.approvals.markApproved).toHaveBeenCalledWith('a1', 'row1');
+    expect(d.planner.plan).not.toHaveBeenCalled();
+    expect(d.router.classify).not.toHaveBeenCalled();
+  });
+
   // (11) Rejection by text
   it('rejects and does not execute when the owner says בטל', async () => {
     const d = makeDeps(baseRow({ textContent: 'בטל' }));

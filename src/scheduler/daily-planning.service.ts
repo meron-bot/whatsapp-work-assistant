@@ -58,7 +58,7 @@ export class DailyPlanningService {
     });
     if (loops) lines.push(`לולאות פתוחות: ${loops}.`);
 
-    await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, lines.join('\n\n'));
+    await this.notify(lines.join('\n\n'));
   }
 
   @Cron('0 13 * * *', { timeZone: 'Asia/Jerusalem' })
@@ -70,7 +70,7 @@ export class DailyPlanningService {
     const lines = ['צ׳ק-אין צהריים. מה הספקת עד עכשיו?'];
     if (urgent.length) lines.push('דחוף ופתוח:\n' + urgent.map((t) => `• ${t.title}`).join('\n'));
     lines.push('האם השתנו סדרי העדיפויות?');
-    await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, lines.join('\n\n'));
+    await this.notify(lines.join('\n\n'));
   }
 
   @Cron('30 18 * * *', { timeZone: 'Asia/Jerusalem' })
@@ -92,7 +92,7 @@ export class DailyPlanningService {
       loops ? `לולאות פתוחות: ${loops}.` : '',
       'מה לסגור ומה להעביר למחר?',
     ].filter(Boolean);
-    await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, lines.join('\n'));
+    await this.notify(lines.join('\n'));
   }
 
   /**
@@ -120,7 +120,7 @@ export class DailyPlanningService {
       const when = t.dueDate ? this.fmtDate(t.dueDate) : '';
       lines.push(`• ${t.title} — ${overdue ? `באיחור (${when})` : `עד ${when}`}`);
     }
-    await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, lines.join('\n'));
+    await this.notify(lines.join('\n'));
   }
 
   /**
@@ -145,7 +145,7 @@ export class DailyPlanningService {
     if (!due.length) return;
     const lines = ['🔁 ממתין למעקב/סגירה:'];
     for (const l of due) lines.push(`• ${l.title}`);
-    await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, lines.join('\n'));
+    await this.notify(lines.join('\n'));
     // Bump nextCheckAt so it re-nudges tomorrow (not on every scan) until closed.
     await this.prisma.openLoop.updateMany({
       where: { id: { in: due.map((l) => l.id) } },
@@ -175,6 +175,12 @@ export class DailyPlanningService {
     } catch (e) {
       this.logger.error('Reminder dispatch failed', { error: (e as Error).message });
     }
+  }
+
+  /** Send a proactive message to the owner. Centralizes the owner-number lookup
+   *  so every briefing and watcher notifies through one place. */
+  private notify(body: string): Promise<string | null> {
+    return this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, body);
   }
 
   private async todaysMeetings(): Promise<string[]> {

@@ -105,9 +105,23 @@ export class MessageProcessorService {
         return;
       }
 
+      // 1c. Deterministic approval decision: a clear "אשר"/"בטל" to a pending
+      // approval is resolved with NO AI call (no router, no planner) — the most
+      // common reply shouldn't cost two model calls. Only genuinely ambiguous
+      // wording falls through to the planner (3a), which decides whether it is an
+      // approval answer or a brand-new request.
+      const pendingApproval = await this.approvals.findOldestPending();
+      if (pendingApproval && ownerText) {
+        const decision = this.approvals.classifyResponse(ownerText);
+        if (decision === 'approved' || decision === 'rejected') {
+          await this.applyApprovalDecision(pendingApproval.id, decision, row.id);
+          await this.finalize(row.id, 'processed');
+          return;
+        }
+      }
+
       // 2. Plan ONCE, giving the planner any pending approval/clarification so it
       // can tell us whether this message answers them.
-      const pendingApproval = await this.approvals.findOldestPending();
       const pendingClarification = await this.clarifications.findOldestPending();
       const memories = await this.memory.retrieveForPrompt(ownerText ?? mediaSummary ?? '');
       const recentContext = await this.buildRecentContext(row);
@@ -166,34 +180,18 @@ export class MessageProcessorService {
         await this.memory.applyWrites(plan.memoryWrites, row.id);
       }
 
-      // 3a. Is this a response to a pending approval?
-      if (pendingApproval && ownerText) {
-        const decision = this.approvals.classifyResponse(ownerText);
-        if (decision === 'approved') {
-          await this.approvals.markApproved(pendingApproval.id, row.id);
-          const result = await this.executeApprovedAction(pendingApproval.id);
-          const reply = this.approvedReply(result);
-          if (reply) await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, reply);
-          await this.finalize(row.id, 'processed');
-          return;
-        }
-        if (decision === 'rejected') {
-          await this.approvals.markRejected(pendingApproval.id, row.id);
-          await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, 'בוטל. לא בוצעה הפעולה.');
-          await this.finalize(row.id, 'processed');
-          return;
-        }
-        // Ambiguous words. Only treat as an approval reply if the planner thinks
-        // it is one; otherwise fall through and handle it as a NEW request so the
-        // message is never dropped (the approval stays pending).
-        if (plan.isAnswerToPendingApproval) {
-          await this.whatsapp.sendText(
-            env().OWNER_WHATSAPP_NUMBER,
-            "לא בטוח שהבנתי אם לאשר או לבטל. לענות בבקשה: 'אשר' או 'בטל'.",
-          );
-          await this.finalize(row.id, 'processed');
-          return;
-        }
+      // 3a. Ambiguous approval wording: a clear approve/reject was already handled
+      // deterministically above (1c), so reaching here means the words were
+      // ambiguous. Trust the planner: if it reads as an approval answer, re-prompt;
+      // otherwise fall through and treat it as a NEW request (the approval stays
+      // pending, so the message is never dropped).
+      if (pendingApproval && ownerText && plan.isAnswerToPendingApproval) {
+        await this.whatsapp.sendText(
+          env().OWNER_WHATSAPP_NUMBER,
+          "לא בטוח שהבנתי אם לאשר או לבטל. לענות בבקשה: 'אשר' או 'בטל'.",
+        );
+        await this.finalize(row.id, 'processed');
+        return;
       }
 
       // 3b. Is this an answer to a pending clarification?
@@ -318,6 +316,24 @@ export class MessageProcessorService {
    *  not connected, so the owner is not misled into thinking it's in their calendar. */
   private calendarNotSyncedNote(): string {
     return `⚠️ שמרתי את זה אצלי, אבל יומן Google לא מחובר — האירוע לא נכנס ליומן שלך בפועל. לחיבור: ${env().APP_BASE_URL}/auth/google`;
+  }
+
+  /** Apply a deterministic approve/reject to a pending approval and reply
+   *  truthfully. No AI involved — used by the fast path in process() (1c). */
+  private async applyApprovalDecision(
+    approvalId: string,
+    decision: 'approved' | 'rejected',
+    rowId: string,
+  ): Promise<void> {
+    if (decision === 'approved') {
+      await this.approvals.markApproved(approvalId, rowId);
+      const result = await this.executeApprovedAction(approvalId);
+      const reply = this.approvedReply(result);
+      if (reply) await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, reply);
+      return;
+    }
+    await this.approvals.markRejected(approvalId, rowId);
+    await this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, 'בוטל. לא בוצעה הפעולה.');
   }
 
   private async executeApprovedAction(approvalId: string): Promise<ExecutionResult | null> {
