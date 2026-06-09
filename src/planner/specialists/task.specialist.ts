@@ -3,10 +3,11 @@ import { Specialist } from './specialist.types';
 /**
  * To-dos / prioritization / breaking work down. Usually internal and reversible,
  * so it keeps the default blocks (assumptions/confidence/pending/learning) and no
- * approval block. Calendar agenda helps it slot follow-ups against real days.
+ * approval block. Calendar agenda helps it slot follow-ups against real days, and
+ * tasks_list lets it read what's already on the owner's Google Tasks list.
  */
 export const taskSpecialist: Specialist = {
   intent: 'task',
   routerHint: 'to-dos, tasks, prioritization, breaking work down, follow-ups',
-  tools: ['calendar_agenda'],
+  tools: ['calendar_agenda', 'tasks_list'],
 };

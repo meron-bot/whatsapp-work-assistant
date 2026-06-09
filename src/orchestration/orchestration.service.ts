@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { GoogleAuthService } from '../google/google-auth.service';
 import { GoogleCalendarService } from '../google/google-calendar.service';
 import { GoogleGmailService } from '../google/google-gmail.service';
+import { GoogleTasksService } from '../google/google-tasks.service';
 import { AppLogger } from '../logger/logger.service';
 import { ContactService } from '../contacts/contact.service';
 import { LearnedFactService } from '../memory/learned-fact.service';
@@ -31,6 +32,7 @@ export class OrchestrationService {
   constructor(
     private readonly calendar: GoogleCalendarService,
     private readonly gmail: GoogleGmailService,
+    private readonly tasks: GoogleTasksService,
     private readonly googleAuth: GoogleAuthService,
     private readonly memory: LearnedFactService,
     private readonly webResearch: WebResearchService,
@@ -58,6 +60,7 @@ export class OrchestrationService {
   private readonly handlers: Record<ToolName, ToolHandler> = {
     calendar_freebusy: (r) => this.freebusy(r.query),
     calendar_agenda: (r) => this.agenda(r.query),
+    tasks_list: (r) => this.tasksList(r.query),
     gmail_find_contact: (r, sourceMessageId) => this.findContact(r.query, sourceMessageId),
     gmail_search: (r) => this.gmailSearch(r.query),
     web_research: (r) => this.webResearch.research(r.query),
@@ -95,6 +98,31 @@ export class OrchestrationService {
       return `  ${when} — ${e.summary ?? '(ללא כותרת)'}`;
     });
     return `[יומן ${scope}]\n${lines.join('\n')}`;
+  }
+
+  // --- tasks ---
+
+  /** Read the owner's open Google Tasks. query = "" for all open tasks, or a
+   *  keyword to filter by title. Lets the planner see what's already on the
+   *  to-do list instead of assuming or asking. */
+  private async tasksList(query: string): Promise<string> {
+    if (!(await this.googleAuth.isAuthorized())) return this.notConnected();
+    const items = await this.tasks.listOpen();
+    const q = (query || '').trim().toLowerCase();
+    const matched = q
+      ? items.filter((t) => (t.title ?? '').toLowerCase().includes(q))
+      : items;
+    if (!matched.length) {
+      return q
+        ? `[משימות "${query}"] אין משימות פתוחות תואמות ב-Google Tasks.`
+        : `[משימות] אין משימות פתוחות ב-Google Tasks.`;
+    }
+    const lines = matched.map((t) => {
+      const due = t.due ? ` (עד ${this.fmtDate(new Date(t.due))})` : '';
+      return `  • ${t.title ?? '(ללא כותרת)'}${due}`;
+    });
+    const scope = q ? `משימות "${query}"` : 'משימות פתוחות';
+    return `[${scope}] (${matched.length})\n${lines.join('\n')}`;
   }
 
   // --- gmail ---

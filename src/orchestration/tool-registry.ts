@@ -24,6 +24,11 @@ export const TOOLS = [
     description: 'when you need what\'s actually on the calendar. Same query format.',
   },
   {
+    name: 'tasks_list',
+    description:
+      'to read the owner\'s existing Google Tasks (their open to-dos). query = "" for all open tasks, or a keyword to filter by title.',
+  },
+  {
     name: 'gmail_find_contact',
     description:
       'when you need someone\'s email to invite/email them. query = the person\'s name. (Found contacts are remembered automatically.)',
