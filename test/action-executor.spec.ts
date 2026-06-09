@@ -66,6 +66,7 @@ describe('ActionExecutorService', () => {
       googleAuth: { isAuthorized: jest.fn().mockResolvedValue(false) },
       gmail: { sendEmail: jest.fn(), findContactEmail: jest.fn() },
       docs: { createDocument: jest.fn() },
+      contacts: { findEmail: jest.fn().mockResolvedValue(null), remember: jest.fn() },
       audit: {
         success: jest.fn().mockResolvedValue(undefined),
         skipped: jest.fn().mockResolvedValue(undefined),
@@ -84,6 +85,7 @@ describe('ActionExecutorService', () => {
       deps.googleAuth,
       deps.gmail,
       deps.docs,
+      deps.contacts,
       deps.audit,
     );
   });
@@ -264,6 +266,24 @@ describe('ActionExecutorService', () => {
       googleDocUrl: 'https://docs.google.com/document/d/gd1/edit',
     });
     expect(deps.prisma.documentDraft.update).toHaveBeenCalled();
+  });
+
+  // Contact model: an approved email to a NAME resolves from the stored contact
+  // first — no live Gmail lookup needed.
+  it('resolves an email recipient from a stored contact without hitting Gmail', async () => {
+    deps.googleAuth.isAuthorized.mockResolvedValue(true);
+    deps.contacts.findEmail.mockResolvedValue('dana@stored.com');
+    deps.gmail.sendEmail.mockResolvedValue('m-1');
+
+    const result = await svc.runLowRisk(
+      action({ type: 'send_email', title: 'נושא', description: 'גוף', participants: ['דנה'] }),
+      { sourceMessageId: 'm10', plannerOutput: plan(action({})) },
+    );
+
+    expect(deps.contacts.findEmail).toHaveBeenCalledWith('דנה');
+    expect(deps.gmail.findContactEmail).not.toHaveBeenCalled();
+    expect(deps.gmail.sendEmail).toHaveBeenCalledWith({ to: 'dana@stored.com', subject: 'נושא', body: 'גוף' });
+    expect(result).toEqual({ type: 'email', sent: true, to: 'dana@stored.com' });
   });
 
   it('ignores non-actionable actions and audits the skip', async () => {

@@ -312,3 +312,19 @@ model LearnedFact {
 
   @@index([type, active])
 }
+
+/// Dedicated contacts the assistant can resolve email recipients from without
+/// re-searching Gmail every time. Populated when a contact is found in Gmail or
+/// stated by the owner; looked up first when sending mail / inviting people.
+model Contact {
+  id        String   @id @default(cuid())
+  name      String
+  email     String?
+  phone     String?
+  notes     String?
+  source    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+}

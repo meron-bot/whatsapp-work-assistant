@@ -246,8 +246,13 @@ export class MessageProcessorService {
     const gated = results.some((r) => r.type === 'approval' || r.type === 'clarification');
     if (!gated && plan.replyToUser) {
       // Append honest, useful notes: not-synced warnings, the drafted document
-      // (link/body + missing facts), and calendar conflict/Meet info.
-      const notes = [this.notSyncedNotes(results), this.deliveryNotes(results)]
+      // (link/body + missing facts), calendar conflict/Meet info, and the
+      // assumptions the planner acted on (so the owner can correct them).
+      const notes = [
+        this.notSyncedNotes(results),
+        this.deliveryNotes(results),
+        this.assumptionNote(plan),
+      ]
         .filter(Boolean)
         .join('\n\n');
       const reply = notes ? `${plan.replyToUser}\n\n${notes}` : plan.replyToUser;
@@ -271,6 +276,13 @@ export class MessageProcessorService {
       }
     }
     return notes.filter(Boolean).join('\n\n');
+  }
+
+  /** Surface the assumptions the planner acted on so the owner can correct them —
+   *  the "act + state the assumption" half of solve-before-ask. '' when none. */
+  private assumptionNote(plan: PlannerOutput): string {
+    if (!plan.assumptions.length) return '';
+    return 'הנחתי (תקן אם צריך):\n' + plan.assumptions.map((a) => `• ${a}`).join('\n');
   }
 
   /** Build the document-delivery note for a drafted document result. */

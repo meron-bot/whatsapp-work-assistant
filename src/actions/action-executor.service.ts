@@ -10,6 +10,7 @@ import { GoogleCalendarService } from '../google/google-calendar.service';
 import { GoogleAuthService } from '../google/google-auth.service';
 import { GoogleGmailService } from '../google/google-gmail.service';
 import { GoogleDocsService } from '../google/google-docs.service';
+import { ContactService } from '../contacts/contact.service';
 import { OpenLoopService } from '../open-loops/open-loop.service';
 import { PlannerAction, PlannerOutput } from '../planner/planner.schema';
 import { PrismaService } from '../prisma/prisma.service';
@@ -72,6 +73,7 @@ export class ActionExecutorService {
     private readonly googleAuth: GoogleAuthService,
     private readonly gmail: GoogleGmailService,
     private readonly docs: GoogleDocsService,
+    private readonly contacts: ContactService,
     private readonly audit: AuditService,
   ) {}
 
@@ -437,6 +439,9 @@ export class ActionExecutorService {
     const first = action.participants[0]?.trim();
     if (!first) return null;
     if (first.includes('@')) return first;
+    // Prefer a stored contact (no Gmail round-trip), then a live Gmail lookup.
+    const stored = await this.contacts.findEmail(first);
+    if (stored) return stored;
     const found = await this.gmail.findContactEmail(first);
     return found?.email ?? null;
   }

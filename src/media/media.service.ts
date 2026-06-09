@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AiService } from '../ai/ai.service';
+import { extractDocumentText } from './document-text';
 import { AppLogger } from '../logger/logger.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
@@ -127,8 +128,13 @@ export class MediaService {
         result.extractedText = vision.extractedText;
         result.classification = vision.classification;
       } else if (msg.type === 'document') {
-        result.extractedText = null; // text extraction for PDFs/docx left for a follow-up
-        result.aiSummary = `Document received: ${msg.filename ?? filename}`;
+        // Extract text from PDFs/Word docs so the planner can act on the CONTENT,
+        // not just the filename. Unsupported/unreadable files degrade to "received".
+        const extracted = await extractDocumentText(buffer, mimeType, msg.filename);
+        result.extractedText = extracted;
+        result.aiSummary = extracted
+          ? `Document: ${msg.filename ?? filename}`
+          : `Document received: ${msg.filename ?? filename}`;
       }
     } catch (e) {
       processingError = (e as Error).message.slice(0, 500);

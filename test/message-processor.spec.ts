@@ -360,6 +360,22 @@ describe('MessageProcessorService', () => {
     expect(d.whatsapp.sendText).toHaveBeenCalledWith('972500000000', 'הוספתי משימה.');
   });
 
+  // Assumptions the planner acted on are surfaced so the owner can correct them.
+  it('appends the planner assumptions to the reply', async () => {
+    const d = makeDeps(baseRow({ textContent: 'תקבע פגישה מחר' }));
+    d.planner.plan.mockResolvedValue(
+      emptyPlan({ replyToUser: 'קבעתי.', assumptions: ['הנחתי 60 דק׳', 'קבעתי ל-09:00'] }),
+    );
+    d.executor.executePlan.mockResolvedValue([]);
+
+    await d.svc.process('wamid.1');
+
+    const reply = d.whatsapp.sendText.mock.calls.find((c: any[]) => c[1].includes('קבעתי.'));
+    expect(reply).toBeDefined();
+    expect(reply[1]).toContain('הנחתי 60');
+    expect(reply[1]).toContain('09:00');
+  });
+
   // A drafted document must actually be DELIVERED: the Google Doc link is appended
   // to the reply so the owner receives the draft instead of just "הכנתי טיוטה".
   it('appends the Google Doc link when a document was drafted', async () => {

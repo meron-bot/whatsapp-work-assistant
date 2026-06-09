@@ -4,6 +4,7 @@ import { GoogleAuthService } from '../google/google-auth.service';
 import { GoogleCalendarService } from '../google/google-calendar.service';
 import { GoogleGmailService } from '../google/google-gmail.service';
 import { AppLogger } from '../logger/logger.service';
+import { ContactService } from '../contacts/contact.service';
 import { LearnedFactService } from '../memory/learned-fact.service';
 import { ToolRequest } from '../planner/planner.schema';
 import { ToolName } from './tool-registry';
@@ -33,6 +34,7 @@ export class OrchestrationService {
     private readonly googleAuth: GoogleAuthService,
     private readonly memory: LearnedFactService,
     private readonly webResearch: WebResearchService,
+    private readonly contacts: ContactService,
   ) {}
 
   async resolve(requests: ToolRequest[], sourceMessageId?: string): Promise<string[]> {
@@ -98,12 +100,24 @@ export class OrchestrationService {
   // --- gmail ---
 
   private async findContact(name: string, sourceMessageId?: string): Promise<string> {
+    // Check stored contacts first — no Gmail round-trip when we already know them.
+    const known = await this.contacts.findEmail(name);
+    if (known) {
+      return `[איש קשר "${name}"] כתובת מייל: ${known} (מהזיכרון).`;
+    }
+
     if (!(await this.googleAuth.isAuthorized())) return this.notConnected();
     const found = await this.gmail.findContactEmail(name);
     if (!found) {
       return `[איש קשר "${name}"] לא נמצאה כתובת מייל ב-Gmail. שאל את מירון פעם אחת מה הכתובת.`;
     }
-    // Remember the contact so we never have to look it up (or ask) again.
+    // Remember the contact (structured + as a learned fact) so we never look it
+    // up — or ask — again.
+    await this.contacts.remember({
+      name: found.displayName || name,
+      email: found.email,
+      source: 'gmail',
+    });
     await this.memory.applyWrites(
       [
         {
