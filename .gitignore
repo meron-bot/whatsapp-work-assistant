@@ -14,6 +14,8 @@ google*.txt
 *.secret
 *credential*
 secrets/
+# Personal side-project that happens to live in this folder (has telegram.env)
+שעות עבודה/
 prisma/*.db
 *.tsbuildinfo
 dump.rdb
