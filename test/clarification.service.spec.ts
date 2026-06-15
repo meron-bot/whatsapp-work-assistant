@@ -10,6 +10,7 @@ describe('ClarificationService', () => {
   let prisma: any;
   let whatsapp: any;
   let audit: any;
+  let openLoops: any;
   let svc: ClarificationService;
 
   beforeEach(() => {
@@ -18,11 +19,14 @@ describe('ClarificationService', () => {
         create: jest.fn().mockResolvedValue({ id: 'c1', question: 'q' }),
         update: jest.fn().mockResolvedValue({ id: 'c1', status: 'answered' }),
         findFirst: jest.fn().mockResolvedValue({ id: 'c1', question: 'q' }),
+        findMany: jest.fn().mockResolvedValue([]),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
     };
     whatsapp = { sendClarificationQuestion: jest.fn().mockResolvedValue('wamid.q') };
     audit = { success: jest.fn().mockResolvedValue(undefined) };
-    svc = new ClarificationService(prisma, whatsapp, audit);
+    openLoops = { closeByClarification: jest.fn().mockResolvedValue(1) };
+    svc = new ClarificationService(prisma, whatsapp, audit, openLoops);
   });
 
   // (5) Pending clarification creation — sends the question and records it
@@ -52,6 +56,8 @@ describe('ClarificationService', () => {
       where: { id: 'c1' },
       data: expect.objectContaining({ status: 'answered', answerText: 'רמת גן' }),
     });
+    // The open loop tracking this question is closed so the watcher stops nagging.
+    expect(openLoops.closeByClarification).toHaveBeenCalledWith('c1', 'done');
   });
 
   it('finds the oldest pending clarification to route an answer to', async () => {

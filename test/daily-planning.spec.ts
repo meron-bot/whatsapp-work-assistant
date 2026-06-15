@@ -11,6 +11,7 @@ const QUIET = new Date('2026-06-13T07:00:00Z');
 function makeDeps() {
   const prisma = {
     task: { findMany: jest.fn().mockResolvedValue([]) },
+    calendarEvent: { findMany: jest.fn().mockResolvedValue([]) },
     openLoop: { findMany: jest.fn().mockResolvedValue([]), updateMany: jest.fn().mockResolvedValue({}) },
   };
   const whatsapp = { sendText: jest.fn().mockResolvedValue('wamid.out') };
@@ -85,6 +86,32 @@ describe('DailyPlanningService — proactive watchers', () => {
       expect(prisma.openLoop.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: { id: { in: ['l1', 'l2'] } } }),
       );
+    });
+  });
+
+  describe('reconcileOpenLoops', () => {
+    it('does nothing when there are no linked open loops', async () => {
+      const { svc, prisma } = makeDeps();
+      await svc.reconcileOpenLoops(ACTIVE);
+      expect(prisma.openLoop.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('closes loops whose linked task is done or calendar event has ended', async () => {
+      const { svc, prisma } = makeDeps();
+      prisma.openLoop.findMany.mockResolvedValue([
+        { id: 'l1', linkedTaskId: 't-done', linkedEventId: null },
+        { id: 'l2', linkedTaskId: null, linkedEventId: 'e-past' },
+        { id: 'l3', linkedTaskId: 't-open', linkedEventId: null }, // still open → kept
+      ]);
+      prisma.task.findMany.mockResolvedValue([{ id: 't-done' }]);
+      prisma.calendarEvent.findMany.mockResolvedValue([{ id: 'e-past' }]);
+
+      await svc.reconcileOpenLoops(ACTIVE);
+
+      expect(prisma.openLoop.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: ['l1', 'l2'] } },
+        data: { status: 'done' },
+      });
     });
   });
 

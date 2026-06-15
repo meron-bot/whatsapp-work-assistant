@@ -18,14 +18,17 @@ export class GoogleAuthController {
   /** Quick liveness check: is a Google refresh token stored and does it still work?
    *  Open in a browser to verify the connection without reading server logs. */
   @Get('status')
-  async status(): Promise<{ connected: boolean; email?: string; error?: string }> {
+  async status(): Promise<{ connected: boolean; error?: string }> {
     const authorized = await this.auth.isAuthorized();
     if (!authorized) return { connected: false, error: 'No token stored. Visit /auth/google to connect.' };
     try {
       const client = await this.auth.getAuthorizedClient();
-      const oauth2 = google.oauth2({ version: 'v2', auth: client });
-      const info = await oauth2.userinfo.get();
-      return { connected: true, email: info.data.email ?? undefined };
+      // Probe with a scope we actually hold (tasks). We never request a
+      // userinfo/email scope, so oauth2.userinfo.get() would 401 and report a
+      // false "disconnected" even when calendar/tasks work fine.
+      const tasks = google.tasks({ version: 'v1', auth: client });
+      await tasks.tasklists.list({ maxResults: 1 });
+      return { connected: true };
     } catch (e) {
       return { connected: false, error: (e as Error).message };
     }

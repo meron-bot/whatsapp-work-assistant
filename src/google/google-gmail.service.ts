@@ -9,6 +9,8 @@ export interface DraftInput {
 }
 
 export interface GmailHit {
+  /** Gmail message id — stable, used to dedupe triage notifications. */
+  id: string;
   from: string;
   to: string;
   subject: string;
@@ -86,6 +88,7 @@ export class GoogleGmailService {
       const h = (name: string) =>
         headers.find((x) => x.name?.toLowerCase() === name.toLowerCase())?.value ?? '';
       hits.push({
+        id,
         from: h('From'),
         to: h('To'),
         subject: h('Subject'),

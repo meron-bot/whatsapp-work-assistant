@@ -52,7 +52,23 @@ describe('ActionExecutorService', () => {
   beforeEach(() => {
     deps = {
       prisma: {
-        task: { create: jest.fn().mockResolvedValue({ id: 't1' }), update: jest.fn() },
+        task: {
+          create: jest.fn().mockResolvedValue({ id: 't1' }),
+          update: jest.fn().mockResolvedValue({ id: 't1', title: 'Test task' }),
+          findUnique: jest.fn().mockResolvedValue(null),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        calendarEvent: {
+          update: jest.fn().mockResolvedValue({ id: 'e1', title: 'פגישה עם עומרי' }),
+          findUnique: jest.fn().mockResolvedValue(null),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        reminder: {
+          update: jest.fn().mockResolvedValue({ id: 'r1', title: 'תזכורת' }),
+          findUnique: jest.fn().mockResolvedValue(null),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        openLoop: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
         approval: { findUnique: jest.fn() },
         documentDraft: { update: jest.fn() },
       },
@@ -61,8 +77,8 @@ describe('ActionExecutorService', () => {
       reminders: { create: jest.fn().mockResolvedValue({ id: 'r1' }) },
       openLoops: { create: jest.fn().mockResolvedValue({ id: 'l1' }) },
       documents: { draft: jest.fn() },
-      tasks: { createTask: jest.fn() },
-      calendar: { createEvent: jest.fn() },
+      tasks: { createTask: jest.fn(), completeTask: jest.fn(), updateTask: jest.fn() },
+      calendar: { createEvent: jest.fn(), updateEvent: jest.fn(), cancelEvent: jest.fn() },
       googleAuth: { isAuthorized: jest.fn().mockResolvedValue(false) },
       gmail: { sendEmail: jest.fn(), findContactEmail: jest.fn() },
       docs: { createDocument: jest.fn() },
@@ -284,6 +300,85 @@ describe('ActionExecutorService', () => {
     expect(deps.gmail.findContactEmail).not.toHaveBeenCalled();
     expect(deps.gmail.sendEmail).toHaveBeenCalledWith({ to: 'dana@stored.com', subject: 'נושא', body: 'גוף' });
     expect(result).toEqual({ type: 'email', sent: true, to: 'dana@stored.com' });
+  });
+
+  // --- mutations of existing items ---
+
+  // "סיימתי עם X" → the open task is found by title, marked done locally,
+  // completed in Google Tasks, and its open loop is closed.
+  it('completes a task by title match, syncs Google, and closes its open loop', async () => {
+    deps.googleAuth.isAuthorized.mockResolvedValue(true);
+    deps.prisma.task.findMany.mockResolvedValue([
+      { id: 't7', title: 'להתקשר לספק', status: 'open', googleTaskId: 'g7' },
+    ]);
+
+    const result = await svc.runLowRisk(
+      action({ type: 'complete_task', title: 'להתקשר לספק' }),
+      { sourceMessageId: 'm20', plannerOutput: plan(action({})) },
+    );
+
+    expect(deps.prisma.task.update).toHaveBeenCalledWith({
+      where: { id: 't7' },
+      data: { status: 'done' },
+    });
+    expect(deps.tasks.completeTask).toHaveBeenCalledWith('g7');
+    expect(deps.prisma.openLoop.updateMany).toHaveBeenCalled();
+    expect(result).toEqual({
+      type: 'mutation', op: 'completed', entity: 'task', id: 't7',
+      title: 'להתקשר לספק', googleSynced: true,
+    });
+  });
+
+  // "תזיז את הפגישה" with a targetId from the recent-actions digest → the new
+  // start keeps the original duration and the change is patched into Google.
+  it('moves a calendar event by targetId, keeping its duration', async () => {
+    deps.googleAuth.isAuthorized.mockResolvedValue(true);
+    deps.calendar.checkFreeBusy = jest.fn().mockResolvedValue([]);
+    deps.prisma.calendarEvent.findUnique.mockResolvedValue({
+      id: 'e1',
+      title: 'פגישה עם עומרי',
+      googleEventId: 'ge1',
+      startTime: new Date('2026-06-11T11:00:00Z'),
+      endTime: new Date('2026-06-11T11:30:00Z'), // 30-minute meeting
+    });
+
+    const result = await svc.runLowRisk(
+      action({
+        type: 'update_calendar_event',
+        title: 'פגישה עם עומרי',
+        startTime: '2026-06-11T14:00:00Z',
+        toolPayload: { targetId: 'e1' },
+      }),
+      { sourceMessageId: 'm21', plannerOutput: plan(action({})) },
+    );
+
+    expect(deps.prisma.calendarEvent.update).toHaveBeenCalledWith({
+      where: { id: 'e1' },
+      data: {
+        startTime: new Date('2026-06-11T14:00:00Z'),
+        endTime: new Date('2026-06-11T14:30:00Z'),
+      },
+    });
+    expect(deps.calendar.updateEvent).toHaveBeenCalledWith('ge1', {
+      description: null,
+      startTime: '2026-06-11T14:00:00.000Z',
+      endTime: '2026-06-11T14:30:00.000Z',
+    });
+    expect(result).toMatchObject({ type: 'mutation', op: 'updated', entity: 'calendar_event', googleSynced: true });
+  });
+
+  // An unknown target never guesses — it becomes a clarification question.
+  it('asks which item is meant when a mutation target cannot be found', async () => {
+    const result = await svc.runLowRisk(
+      action({ type: 'cancel_reminder', title: 'תזכורת שלא קיימת' }),
+      { sourceMessageId: 'm22', plannerOutput: plan(action({})) },
+    );
+
+    expect(result).toEqual({ type: 'clarification', id: 'c1' });
+    expect(deps.clarifications.create).toHaveBeenCalledWith(
+      expect.objectContaining({ question: expect.stringContaining('לא מצאתי') }),
+    );
+    expect(deps.prisma.reminder.update).not.toHaveBeenCalled();
   });
 
   it('ignores non-actionable actions and audits the skip', async () => {

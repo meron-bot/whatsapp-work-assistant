@@ -230,13 +230,15 @@ model OpenLoop {
   priority         Priority       @default(medium)
   dueDate          DateTime?
   nextCheckAt      DateTime?
-  linkedTaskId     String?
-  linkedEventId    String?
-  linkedDocumentId String?
-  linkedMediaId    String?
-  sourceMessageId  String?
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  linkedTaskId          String?
+  linkedEventId         String?
+  linkedDocumentId      String?
+  linkedMediaId         String?
+  linkedApprovalId      String?
+  linkedClarificationId String?
+  sourceMessageId       String?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
 }
 
 model PendingClarification {

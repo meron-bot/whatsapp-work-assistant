@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { env } from '../config/env';
 import { AuditService } from '../audit/audit.service';
+import { OpenLoopService } from '../open-loops/open-loop.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 
@@ -31,6 +32,7 @@ export class ClarificationService {
     private readonly prisma: PrismaService,
     private readonly whatsapp: WhatsAppService,
     private readonly audit: AuditService,
+    private readonly openLoops: OpenLoopService,
   ) {}
 
   async create(input: CreateClarificationInput) {
@@ -86,6 +88,9 @@ export class ClarificationService {
         answeredAt: new Date(),
       },
     });
+    // Answered -> the loop tracking this question is finished; close it so the
+    // follow-up watcher stops re-nudging about a question already answered.
+    await this.openLoops.closeByClarification(id, 'done');
     await this.audit.success('clarification.answered', { id, answerText }, {
       entityType: 'PendingClarification',
       entityId: id,
@@ -94,9 +99,17 @@ export class ClarificationService {
   }
 
   async expireStale(now = new Date()) {
-    return this.prisma.pendingClarification.updateMany({
+    const stale = await this.prisma.pendingClarification.findMany({
+      where: { status: 'pending', expiresAt: { not: null, lt: now } },
+      select: { id: true },
+    });
+    const res = await this.prisma.pendingClarification.updateMany({
       where: { status: 'pending', expiresAt: { not: null, lt: now } },
       data: { status: 'expired' },
     });
+    // Expired without an answer -> close the loops it spawned as ignored, so a
+    // dead question never lingers as an open loop the watcher keeps raising.
+    for (const c of stale) await this.openLoops.closeByClarification(c.id, 'ignored');
+    return res;
   }
 }

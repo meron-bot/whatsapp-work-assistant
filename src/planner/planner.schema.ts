@@ -14,6 +14,14 @@ export const actionTypeEnum = z.enum([
   'draft_document',
   'save_file',
   'send_email',
+  // Mutations of existing items ("תזיז את הפגישה", "סיימתי", "בטל את התזכורת").
+  // The target is identified by toolPayload.targetId (the id shown in the
+  // recent-actions digest) or, failing that, by title match.
+  'update_task',
+  'complete_task',
+  'update_calendar_event',
+  'cancel_calendar_event',
+  'cancel_reminder',
   'ask_clarification',
   'request_approval',
   'ignore',

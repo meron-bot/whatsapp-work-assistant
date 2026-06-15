@@ -98,6 +98,18 @@ export class MessageProcessorService {
         return;
       }
 
+      // Voice/media turns must enter the conversation history too: without
+      // textContent the row is invisible to buildRecentContext, so everything
+      // the owner said by voice used to vanish from the assistant's memory of
+      // the thread (and the owner mostly speaks, not types).
+      if (!row.textContent) {
+        const historyText = ownerText ?? `[מדיה] ${mediaSummary!.slice(0, 300)}`;
+        await this.prisma.whatsAppMessage.update({
+          where: { id: row.id },
+          data: { textContent: historyText },
+        });
+      }
+
       // 1b. Deterministic memory commands ("what do you remember" / "forget …").
       // Handled WITHOUT any AI call — pure cost saving.
       if (ownerText && (await this.handleMemoryCommand(ownerText))) {
@@ -137,6 +149,7 @@ export class MessageProcessorService {
         knownProjects: await this.knownProjects(),
         memories,
         recentContext,
+        recentActions: await this.buildRecentActions(),
         pendingApproval: pendingApproval
           ? { id: pendingApproval.id, description: pendingApproval.description }
           : null,
@@ -274,6 +287,9 @@ export class MessageProcessorService {
         }
         if (r.meetLink) notes.push(`🔗 קישור Meet: ${r.meetLink}`);
       }
+      if (r.type === 'mutation' && r.conflict) {
+        notes.push('⚠️ שים לב: השעה החדשה חופפת לאירוע קיים ביומן. עדכנתי בכל זאת — תקן אם צריך.');
+      }
     }
     return notes.filter(Boolean).join('\n\n');
   }
@@ -314,6 +330,14 @@ export class MessageProcessorService {
     }
     if (results.some((r) => r.type === 'calendar' && !r.googleSynced)) {
       notes.push(this.calendarNotSyncedNote());
+    }
+    // A mutation that didn't reach Google: the local record changed but the
+    // owner's actual Google item did not — say so honestly.
+    for (const r of results) {
+      if (r.type === 'mutation' && !r.googleSynced && r.entity !== 'reminder') {
+        const where = r.entity === 'task' ? 'Google Tasks' : 'יומן Google';
+        notes.push(`⚠️ עדכנתי אצלי, אבל השינוי ב"${r.title}" לא הגיע ל-${where} (לא מחובר או שהפריט לא סונכרן). כדאי לבדוק שם.`);
+      }
     }
     return notes.join('\n\n');
   }
@@ -435,6 +459,16 @@ export class MessageProcessorService {
         return result.reason === 'not_connected'
           ? `אישרת, אבל Gmail לא מחובר אז המייל לא נשלח. לחיבור: ${env().APP_BASE_URL}/auth/google`
           : 'אישרת, אבל לא הצלחתי לשלוח את המייל. בדוק את הלוג או נסה שוב.';
+      case 'mutation': {
+        if (result.type !== 'mutation') return '';
+        const verb =
+          result.op === 'cancelled' ? 'ביטלתי' : result.op === 'completed' ? 'סימנתי כבוצע' : 'עדכנתי';
+        const syncNote =
+          !result.googleSynced && result.entity !== 'reminder'
+            ? ' (אבל השינוי לא הגיע ל-Google — כדאי לבדוק שם)'
+            : '';
+        return `אושר. ${verb} את "${result.title}"${syncNote}.`;
+      }
       case 'clarification':
         return ''; // a clarification question was already sent
       default:
@@ -509,6 +543,56 @@ export class MessageProcessorService {
         return `${who}: ${r.textContent}`;
       })
       .join('\n');
+  }
+
+  /**
+   * Digest of what the assistant ALREADY executed recently (tasks, calendar
+   * events, reminders, document drafts — last 7 days, newest first, capped),
+   * fed to the planner so it can resolve references like "הפגישה שקבעת" and
+   * never re-create something it already did. Best-effort: a lookup failure
+   * must never block message processing.
+   */
+  private async buildRecentActions(): Promise<string[]> {
+    try {
+      const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const recent = { where: { createdAt: { gte: since } }, orderBy: { createdAt: 'desc' as const }, take: 8 };
+      const [tasks, events, reminders, docs] = await Promise.all([
+        this.prisma.task.findMany(recent),
+        this.prisma.calendarEvent.findMany(recent),
+        this.prisma.reminder.findMany(recent),
+        this.prisma.documentDraft.findMany(recent),
+      ]);
+      const fmt = (d: Date) =>
+        d.toLocaleString('he-IL', {
+          timeZone: env().OWNER_TIMEZONE,
+          dateStyle: 'short',
+          timeStyle: 'short',
+        });
+      // Each line carries the row id so the planner can target the item in a
+      // mutation action (toolPayload.targetId) without any extra lookup.
+      const items: { at: Date; line: string }[] = [
+        ...tasks.map((t) => ({
+          at: t.createdAt,
+          line: `משימה: "${t.title}"${t.dueDate ? ` (יעד ${fmt(t.dueDate)})` : ''}${t.status !== 'open' ? ` [${t.status}]` : ''} [id:${t.id}]`,
+        })),
+        ...events.map((e) => ({
+          at: e.createdAt,
+          line: `אירוע ביומן: "${e.title}" ב-${fmt(e.startTime)}${e.status === 'cancelled' ? ' [בוטל]' : ''} [id:${e.id}]`,
+        })),
+        ...reminders.map((r) => ({
+          at: r.createdAt,
+          line: `תזכורת: "${r.title}" ל-${fmt(r.remindAt)}${r.status !== 'pending' ? ` [${r.status}]` : ''} [id:${r.id}]`,
+        })),
+        ...docs.map((d) => ({ at: d.createdAt, line: `טיוטת מסמך: "${d.title}" [id:${d.id}]` })),
+      ];
+      return items
+        .sort((a, b) => b.at.getTime() - a.at.getTime())
+        .slice(0, 12)
+        .map((i) => `• ${i.line} (בוצע ${fmt(i.at)})`);
+    } catch (e) {
+      this.logger.warn('Failed to build recent-actions digest', { error: (e as Error).message });
+      return [];
+    }
   }
 
   private toNormalized(rawPayload: unknown, row: { fromNumber: string; toNumber: string; whatsappMessageId: string; messageType: string; textContent: string | null; mediaId: string | null; receivedAt: Date }): NormalizedIncomingMessage {

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma, RiskLevel } from '@prisma/client';
 import { env } from '../config/env';
 import { AuditService } from '../audit/audit.service';
+import { OpenLoopService } from '../open-loops/open-loop.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalView, WhatsAppService } from '../whatsapp/whatsapp.service';
 
@@ -37,6 +38,7 @@ export class ApprovalService {
     private readonly prisma: PrismaService,
     private readonly whatsapp: WhatsAppService,
     private readonly audit: AuditService,
+    private readonly openLoops: OpenLoopService,
   ) {}
 
   async create(input: CreateApprovalInput) {
@@ -104,6 +106,9 @@ export class ApprovalService {
         ownerResponseMessageId: ownerResponseMessageId ?? null,
       },
     });
+    // The work is no longer waiting on the owner — close its open loop so the
+    // follow-up watcher stops re-nudging about something already decided.
+    await this.openLoops.closeByApproval(id, 'done');
     await this.audit.success('approval.approved', { id }, { entityType: 'Approval', entityId: id });
     return updated;
   }
@@ -117,6 +122,8 @@ export class ApprovalService {
         ownerResponseMessageId: ownerResponseMessageId ?? null,
       },
     });
+    // Rejected -> the work is abandoned; close its open loop as ignored.
+    await this.openLoops.closeByApproval(id, 'ignored');
     await this.audit.success('approval.rejected', { id }, { entityType: 'Approval', entityId: id });
     return updated;
   }

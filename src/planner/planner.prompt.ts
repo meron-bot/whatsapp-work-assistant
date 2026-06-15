@@ -23,6 +23,9 @@ export interface PlannerContextInput {
   pendingApproval?: { id: string; description: string } | null;
   knownProjects?: string[];
   memories?: string[];
+  /** Short Hebrew digest of actions the assistant already executed recently
+   *  (tasks/events/reminders/documents), so it remembers what it did. */
+  recentActions?: string[];
   /** Results from tools the planner requested on a previous pass (resolution loop). */
   toolFindings?: string[];
   /**
@@ -48,6 +51,14 @@ export function buildPlannerUserPrompt(ctx: PlannerContextInput): string {
   }
   if (ctx.memories?.length) {
     lines.push(`Known facts about the owner (honor these; do not re-ask):\n${ctx.memories.join('\n')}`);
+  }
+  if (ctx.recentActions?.length) {
+    lines.push(
+      `ACTIONS YOU ALREADY PERFORMED recently (these are REAL and already done — newest first). ` +
+        `When the owner refers to something you did ("הפגישה שקבעת", "המשימה ההיא"), resolve it ` +
+        `against this list. Do NOT create a duplicate of anything listed here unless the owner ` +
+        `explicitly asks for another one.\n${ctx.recentActions.join('\n')}`,
+    );
   }
   if (ctx.recentContext) {
     lines.push(

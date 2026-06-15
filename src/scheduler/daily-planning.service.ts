@@ -153,6 +153,61 @@ export class DailyPlanningService {
     });
   }
 
+  /**
+   * Reconcile open loops with reality: close any still-open loop whose linked
+   * item is already resolved — a task marked done/cancelled (e.g. completed
+   * directly in Google Tasks) or a calendar event that was cancelled or has
+   * already ended. Without this, a past meeting or an externally-finished task
+   * lingers as an "open loop" forever and keeps inflating the daily count and
+   * the follow-up nudges. Internal cleanup — sends no message, so it isn't gated
+   * by quiet hours. Runs before the morning plan so its count is accurate.
+   */
+  @Cron('0 6 * * *', { timeZone: 'Asia/Jerusalem' })
+  async reconcileOpenLoops(now: Date = new Date()): Promise<void> {
+    const loops = await this.prisma.openLoop.findMany({
+      where: {
+        status: { in: ['open', 'waiting_for_owner', 'waiting_for_other'] },
+        OR: [{ linkedTaskId: { not: null } }, { linkedEventId: { not: null } }],
+      },
+      select: { id: true, linkedTaskId: true, linkedEventId: true },
+    });
+    if (!loops.length) return;
+
+    const taskIds = loops.map((l) => l.linkedTaskId).filter((x): x is string => !!x);
+    const eventIds = loops.map((l) => l.linkedEventId).filter((x): x is string => !!x);
+    const [doneTasks, doneEvents] = await Promise.all([
+      taskIds.length
+        ? this.prisma.task.findMany({
+            where: { id: { in: taskIds }, status: { in: ['done', 'cancelled'] } },
+            select: { id: true },
+          })
+        : Promise.resolve([] as { id: string }[]),
+      eventIds.length
+        ? this.prisma.calendarEvent.findMany({
+            where: { id: { in: eventIds }, OR: [{ status: 'cancelled' }, { endTime: { lt: now } }] },
+            select: { id: true },
+          })
+        : Promise.resolve([] as { id: string }[]),
+    ]);
+
+    const resolvedTasks = new Set(doneTasks.map((t) => t.id));
+    const resolvedEvents = new Set(doneEvents.map((e) => e.id));
+    const toClose = loops
+      .filter(
+        (l) =>
+          (l.linkedTaskId && resolvedTasks.has(l.linkedTaskId)) ||
+          (l.linkedEventId && resolvedEvents.has(l.linkedEventId)),
+      )
+      .map((l) => l.id);
+    if (!toClose.length) return;
+
+    const res = await this.prisma.openLoop.updateMany({
+      where: { id: { in: toClose } },
+      data: { status: 'done' },
+    });
+    if (res.count) this.logger.log('Reconciled open loops (closed resolved items)', { count: res.count });
+  }
+
   /** Expire stale pending clarifications (default 3-day TTL) so the oldest-pending
    *  matcher never routes a reply to a dead question. Internal cleanup — no
    *  message is sent, so it isn't gated by quiet hours. */

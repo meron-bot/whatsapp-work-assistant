@@ -1,11 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { env } from '../config/env';
+import { AppLogger } from '../logger/logger.service';
 import {
   CompletionOptions,
   TranscriptionResult,
   VisionResult,
 } from './ai-provider.interface';
 import { AnthropicProvider } from './anthropic.provider';
+import { GroqProvider } from './groq.provider';
 import { OpenAIProvider } from './openai.provider';
 
 /**
@@ -14,9 +16,12 @@ import { OpenAIProvider } from './openai.provider';
  */
 @Injectable()
 export class AiService {
+  private readonly logger = new AppLogger('AiService');
+
   constructor(
     private readonly openai: OpenAIProvider,
     private readonly anthropic: AnthropicProvider,
+    private readonly groq: GroqProvider,
   ) {}
 
   complete(options: CompletionOptions): Promise<string> {
@@ -26,8 +31,23 @@ export class AiService {
       : this.openai.complete(options);
   }
 
-  transcribe(audio: Buffer, mimeType: string): Promise<TranscriptionResult> {
-    return this.openai.transcribe(audio, mimeType);
+  async transcribe(audio: Buffer, mimeType: string): Promise<TranscriptionResult> {
+    // Explicit Groq selection: use it directly.
+    if (env().AI_TRANSCRIPTION_PROVIDER === 'groq') {
+      return this.groq.transcribe(audio, mimeType);
+    }
+    // Default: OpenAI, but fall back to Groq (free Whisper) on any failure when a
+    // Groq key is configured — so transcription keeps working if OpenAI runs out
+    // of quota, instead of degrading to "couldn't transcribe".
+    try {
+      return await this.openai.transcribe(audio, mimeType);
+    } catch (e) {
+      if (!this.groq.isConfigured()) throw e;
+      this.logger.warn('OpenAI transcription failed; falling back to Groq', {
+        error: (e as Error).message,
+      });
+      return this.groq.transcribe(audio, mimeType);
+    }
   }
 
   describeImage(image: Buffer, mimeType: string): Promise<VisionResult> {

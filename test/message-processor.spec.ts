@@ -51,6 +51,10 @@ function makeDeps(row: any, claimCount = 1) {
     },
     project: { findMany: jest.fn().mockResolvedValue([]) },
     approval: { findUnique: jest.fn() },
+    task: { findMany: jest.fn().mockResolvedValue([]) },
+    calendarEvent: { findMany: jest.fn().mockResolvedValue([]) },
+    reminder: { findMany: jest.fn().mockResolvedValue([]) },
+    documentDraft: { findMany: jest.fn().mockResolvedValue([]) },
   };
   const whatsapp = { sendText: jest.fn().mockResolvedValue('wamid.out') };
   const media = { ingest: jest.fn() };
@@ -319,6 +323,54 @@ describe('MessageProcessorService', () => {
     // owner turns labelled with the owner name, assistant turns as פליי
     expect(ctx.recentContext).toContain('מירון: שלישי ורביעי');
     expect(ctx.recentContext).toContain('פליי: באיזה יום?');
+  });
+
+  // Conversation memory for VOICE: a reliable transcript is persisted onto the
+  // message row's textContent so later turns can replay it as history — without
+  // this, everything the owner said by voice vanished from the thread.
+  it('persists a reliable voice transcript into textContent for future history', async () => {
+    const d = makeDeps(
+      baseRow({ messageType: 'audio', textContent: null, mediaId: 'm3', rawPayload: { audio: { mime_type: 'audio/ogg' } } }),
+    );
+    d.media.ingest.mockResolvedValue({
+      mediaAssetId: 'a3',
+      transcript: 'תקבע פגישה עם עומרי ביום שלישי',
+      transcriptConfidence: 0.95,
+      transcriptReliable: true,
+      extractedText: null,
+      aiSummary: null,
+      classification: null,
+      degradedNote: null,
+    });
+
+    await d.svc.process('wamid.1');
+
+    expect(d.prisma.whatsAppMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'row1' },
+        data: { textContent: 'תקבע פגישה עם עומרי ביום שלישי' },
+      }),
+    );
+  });
+
+  // Action memory: recently executed work (tasks/events/...) is fed to the
+  // planner so it can resolve "הפגישה שקבעת" and never re-create what it did.
+  it('feeds recently executed actions to the planner', async () => {
+    const d = makeDeps(baseRow({ textContent: 'תזיז את הפגישה שקבעת לשעה אחרת' }));
+    d.prisma.calendarEvent.findMany.mockResolvedValue([
+      {
+        id: 'e1',
+        title: 'פגישה עם עומרי',
+        startTime: new Date('2026-06-11T11:00:00Z'),
+        createdAt: new Date('2026-06-10T08:00:00Z'),
+      },
+    ]);
+
+    await d.svc.process('wamid.1');
+
+    const ctx = d.planner.plan.mock.calls[0][0];
+    expect(ctx.recentActions).toHaveLength(1);
+    expect(ctx.recentActions[0]).toContain('פגישה עם עומרי');
   });
 
   // (B5) When the planner's action is gated to approval/clarification, the

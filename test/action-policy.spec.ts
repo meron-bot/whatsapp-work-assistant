@@ -106,6 +106,31 @@ describe('action policy', () => {
     });
   });
 
+  // Mutations of existing items: explicitly requested → auto-execute, unless
+  // the planner flagged external participants for approval.
+  it('auto-executes high-confidence mutations of the owner’s own items', () => {
+    for (const type of [
+      'update_task',
+      'complete_task',
+      'update_calendar_event',
+      'cancel_calendar_event',
+      'cancel_reminder',
+    ] as const) {
+      expect(decideAction(action({ type, confidence: 0.9 }))).toEqual({ kind: 'execute' });
+    }
+  });
+
+  it('clarifies a mutation when not confident which item is meant', () => {
+    expect(decideAction(action({ type: 'complete_task', confidence: 0.65 })).kind).toBe('clarify');
+  });
+
+  it('gates a mutation to approval when the planner flags external participants', () => {
+    const d = decideAction(
+      action({ type: 'cancel_calendar_event', requiresApproval: true, approvalReason: 'external attendees' }),
+    );
+    expect(d.kind).toBe('approval');
+  });
+
   it('ignores non-actionable actions with a reason', () => {
     const d = decideAction(action({ type: 'ignore', description: 'small talk' }));
     expect(d).toEqual({ kind: 'ignore', reason: 'small talk' });

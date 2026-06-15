@@ -47,8 +47,12 @@ const envSchema = z.object({
 
   OPENAI_API_KEY: z.string().optional().default(''),
   ANTHROPIC_API_KEY: z.string().optional().default(''),
+  // Groq runs Whisper large-v3 on a free tier with an OpenAI-compatible API.
+  // Used as a free fallback when OpenAI transcription fails (e.g. out of quota),
+  // or as the primary transcriber when AI_TRANSCRIPTION_PROVIDER=groq.
+  GROQ_API_KEY: z.string().optional().default(''),
   AI_PLANNER_PROVIDER: z.enum(['anthropic', 'openai']).default('anthropic'),
-  AI_TRANSCRIPTION_PROVIDER: z.enum(['openai']).default('openai'),
+  AI_TRANSCRIPTION_PROVIDER: z.enum(['openai', 'groq']).default('openai'),
   AI_VISION_PROVIDER: z.enum(['openai']).default('openai'),
   // Cost tiering: cheap model for routine planning, heavy model for hard tasks
   // and document drafting. Planner escalates light->heavy only when needed.
@@ -61,6 +65,24 @@ const envSchema = z.object({
   // roll back. NOTE: z.coerce.boolean() treats any non-empty string (incl.
   // "false") as true, so compare explicitly instead.
   PLANNER_ROUTER_ENABLED: z
+    .string()
+    .optional()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1'),
+
+  // Proactive email triage: every 15 min (inside the active window) scan unread
+  // primary-inbox mail, classify importance with the light model, and push a
+  // short Hebrew digest of the important ones to WhatsApp. 'false' disables.
+  EMAIL_TRIAGE_ENABLED: z
+    .string()
+    .optional()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1'),
+
+  // Meeting prep: ~30 min before each calendar event, push a WhatsApp brief
+  // (attendees, recent mail with them, related open tasks, Meet link). No AI
+  // cost — the brief is assembled deterministically. 'false' disables.
+  MEETING_PREP_ENABLED: z
     .string()
     .optional()
     .default('true')

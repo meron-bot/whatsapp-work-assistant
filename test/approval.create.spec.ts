@@ -10,6 +10,7 @@ describe('ApprovalService lifecycle', () => {
   let prisma: any;
   let whatsapp: any;
   let audit: any;
+  let openLoops: any;
   let svc: ApprovalService;
 
   beforeEach(() => {
@@ -22,7 +23,8 @@ describe('ApprovalService lifecycle', () => {
     };
     whatsapp = { sendApprovalRequest: jest.fn().mockResolvedValue('wamid.appr') };
     audit = { success: jest.fn().mockResolvedValue(undefined) };
-    svc = new ApprovalService(prisma, whatsapp, audit);
+    openLoops = { closeByApproval: jest.fn().mockResolvedValue(1) };
+    svc = new ApprovalService(prisma, whatsapp, audit, openLoops);
   });
 
   // (8) Pending approval creation
@@ -59,5 +61,8 @@ describe('ApprovalService lifecycle', () => {
       where: { id: 'a1' },
       data: expect.objectContaining({ status: 'rejected' }),
     });
+    // Resolving the approval closes its open loop: done on approve, ignored on reject.
+    expect(openLoops.closeByApproval).toHaveBeenCalledWith('a1', 'done');
+    expect(openLoops.closeByApproval).toHaveBeenCalledWith('a1', 'ignored');
   });
 });

@@ -70,6 +70,21 @@ export function decideAction(action: PlannerAction): PolicyDecision {
     return { kind: 'clarify', reason: 'confidence below 0.85 for auto-execute' };
   }
 
+  // Mutations of the owner's own items ("move the meeting", "done with X",
+  // "cancel the reminder") were explicitly requested — the request itself is the
+  // authorization. requiresApproval=true (external participants get notified)
+  // was already handled above; the confidence gate above filters shaky reads.
+  if (
+    action.type === 'update_task' ||
+    action.type === 'complete_task' ||
+    action.type === 'update_calendar_event' ||
+    action.type === 'cancel_calendar_event' ||
+    action.type === 'cancel_reminder'
+  ) {
+    if (action.confidence >= CONFIDENCE_EXECUTE) return { kind: 'execute' };
+    return { kind: 'clarify', reason: 'not confident which item to change' };
+  }
+
   if (action.type === 'save_file') {
     return action.confidence >= CONFIDENCE_EXECUTE
       ? { kind: 'execute' }

@@ -28,7 +28,9 @@ export class PlannerService {
 
     // Cost tiering: try the cheap model first; escalate to the heavy model only
     // when the light one fails validation or returns a low-confidence result.
-    const light = await this.attempt(ctx, specialist, 'light');
+    // Long/multi-part messages skip the light tier entirely — the light model
+    // tends to drop items from them, and its doomed attempt costs a round-trip.
+    const light = this.isLongRequest(ctx) ? null : await this.attempt(ctx, specialist, 'light');
     if (light && light.confidence >= 0.6) return light;
 
     const heavy = await this.attempt(ctx, specialist, 'heavy');
@@ -38,6 +40,13 @@ export class PlannerService {
     // result; otherwise fall back to a safe clarification.
     if (light) return light;
     return this.fallbackClarification();
+  }
+
+  /** A long message (typed or voice) almost certainly carries several requests
+   *  or rich detail — plan it on the heavy model from the start. */
+  private isLongRequest(ctx: PlannerContextInput): boolean {
+    const content = [ctx.text, ctx.transcript].filter(Boolean).join(' ');
+    return content.length > 350;
   }
 
   /** One planning attempt at a given cost tier. Returns null on invalid output. */
@@ -54,7 +63,10 @@ export class PlannerService {
         messages: [{ role: 'user', content: userPrompt }],
         jsonMode: true,
         temperature: 0,
-        maxTokens: 2000,
+        // A multi-action plan for a long message easily exceeds 2000 tokens of
+        // JSON; a truncated object fails parsing and used to surface as "לא
+        // הצלחתי להבין" on perfectly clear (just long) requests.
+        maxTokens: 6000,
         tier,
       });
       return plannerOutputSchema.parse(this.safeParseJson(raw));

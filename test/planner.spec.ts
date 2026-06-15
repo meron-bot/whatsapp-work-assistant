@@ -77,6 +77,24 @@ describe('PlannerService', () => {
     expect(out.needsClarification).toBe(true);
   });
 
+  // Cost tiering: a short message tries the light model first.
+  it('plans a short message on the light tier first', async () => {
+    const ai = fakeAi(JSON.stringify(validOutput));
+    const planner = new PlannerService(ai);
+    await planner.plan(ctx);
+    expect((ai.complete as jest.Mock).mock.calls[0][0].tier).toBe('light');
+  });
+
+  // Long/multi-part messages go straight to the heavy model: the light one
+  // drops items, and its doomed attempt costs a full round-trip.
+  it('plans a long message directly on the heavy tier', async () => {
+    const ai = fakeAi(JSON.stringify(validOutput));
+    const planner = new PlannerService(ai);
+    await planner.plan({ ...ctx, text: 'תקבע פגישה ותשלח מייל ו'.padEnd(400, 'א') });
+    expect(ai.complete).toHaveBeenCalledTimes(1);
+    expect((ai.complete as jest.Mock).mock.calls[0][0].tier).toBe('heavy');
+  });
+
   it('never invents: missing fields stay null in the schema', () => {
     const parsed = plannerOutputSchema.parse(validOutput);
     expect(parsed.detectedProject).toBeNull();

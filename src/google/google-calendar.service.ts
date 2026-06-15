@@ -97,4 +97,34 @@ export class GoogleCalendarService {
       meetLink: res.data.hangoutLink ?? null,
     };
   }
+
+  /** Patch an existing event; only the provided fields change. sendUpdates is
+   *  'all' so any attendees are notified of the change (no-op without them). */
+  async updateEvent(
+    eventId: string,
+    patch: { title?: string; description?: string | null; startTime?: string; endTime?: string },
+  ): Promise<void> {
+    const calendar = await this.api();
+    await calendar.events.patch({
+      calendarId: 'primary',
+      eventId,
+      sendUpdates: 'all',
+      requestBody: {
+        summary: patch.title,
+        description: patch.description ?? undefined,
+        start: patch.startTime
+          ? { dateTime: patch.startTime, timeZone: env().OWNER_TIMEZONE }
+          : undefined,
+        end: patch.endTime
+          ? { dateTime: patch.endTime, timeZone: env().OWNER_TIMEZONE }
+          : undefined,
+      },
+    });
+  }
+
+  /** Delete (cancel) an event; attendees are notified. */
+  async cancelEvent(eventId: string): Promise<void> {
+    const calendar = await this.api();
+    await calendar.events.delete({ calendarId: 'primary', eventId, sendUpdates: 'all' });
+  }
 }

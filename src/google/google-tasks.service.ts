@@ -36,6 +36,23 @@ export class GoogleTasksService {
     return `${d.toISOString().slice(0, 10)}T00:00:00Z`;
   }
 
+  /** Patch an existing task; only the provided fields change. */
+  async updateTask(
+    taskId: string,
+    patch: { title?: string; notes?: string | null; due?: string | null },
+  ): Promise<void> {
+    const tasks = await this.api();
+    await tasks.tasks.patch({
+      tasklist: '@default',
+      task: taskId,
+      requestBody: {
+        title: patch.title,
+        notes: patch.notes ?? undefined,
+        due: this.toTasksDue(patch.due),
+      },
+    });
+  }
+
   async completeTask(taskId: string): Promise<void> {
     const tasks = await this.api();
     await tasks.tasks.patch({

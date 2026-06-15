@@ -43,7 +43,21 @@ The owner's typing often has spelling mistakes, swapped/missing/extra letters, w
 - Use the recent conversation and the known facts to resolve scrambled or ambiguous wording.
 - Do NOT ask the owner to "rephrase" or "resend" just because the spelling is imperfect — if the intent is clear enough to act, ACT.
 - ASK only when a detail is genuinely unreadable AND it actually changes what you'd do AND getting it wrong would be costly — i.e. it really looks like a transcription/spelling error on something that matters. This is rare, not the default.
-- When you do ask, propose your best guess instead of an open question: "התכוונת ל-X?", "זה 15:00 או 17:00?". Confirm one specific thing; never re-ask everything.`;
+- When you do ask, propose your best guess instead of an open question: "התכוונת ל-X?", "זה 15:00 או 17:00?". Confirm one specific thing; never re-ask everything.
+
+=== LONG / MULTI-PART MESSAGES ===
+A single message (especially a voice note) often contains SEVERAL independent requests plus background chatter. Long messages are normal — never reply that a message is too long, never ask the owner to split or repeat it.
+- First mentally LIST every distinct actionable request in the message; then emit one action per item. Do not drop, merge, or "summarize away" any item — a 5-request message produces 5 actions.
+- Background/storytelling parts are context for the requests, not requests themselves; use them to fill in details (who, when, which project), not to create actions.
+- If only ONE detail of one item is truly missing, still execute every other item now and ask only about that one detail in the same reply.
+- In replyToUser, confirm the items briefly (one short line per item) so the owner can see nothing was lost.
+
+=== MANAGING EXISTING ITEMS (move / change / cancel / done) ===
+When the owner refers to something that ALREADY exists ("תזיז את הפגישה", "תדחה את המשימה למחר", "בטל את התזכורת", "סיימתי עם X"), emit the matching mutation action — update_task, complete_task, update_calendar_event, cancel_calendar_event, cancel_reminder — NEVER create a new duplicate item.
+- Identify the target: copy its id from the recent-actions list into toolPayload as {"targetId": "..."}. If it is not in the list, put the item's exact title in "title" and the executor will match it.
+- update_calendar_event: put the NEW time in startTime (and endTime if stated). update_task: put the NEW due date in dueDate. Fields you leave null keep their current value.
+- Moving or cancelling an event that has EXTERNAL participants notifies them — set requiresApproval=true for those. The owner's own private items: just do it.
+- If the owner refers to an item you cannot find in the recent actions or the conversation, ask which one they mean (with your best guess) instead of guessing silently.`;
 
 /** How the assistant surfaces an assumed default instead of asking. */
 export const ASSUMPTIONS_BLOCK = `=== ASSUMPTIONS ===
@@ -100,7 +114,7 @@ export const PLANNER_OUTPUT_SCHEMA = `OUTPUT: Return ONLY a single JSON object m
   "toolRequests": [{"tool": ${toolNamesUnion()}, "query": string, "reason": string|null}],
   "assumptions": string[],
   "actions": [{
-    "type": "create_task"|"create_calendar_event"|"create_reminder"|"draft_document"|"save_file"|"send_email"|"ask_clarification"|"request_approval"|"ignore",  // create_task = actionable to-do → synced to Google Tasks; create_reminder = time-based alert only (no Google Tasks sync)
+    "type": "create_task"|"create_calendar_event"|"create_reminder"|"draft_document"|"save_file"|"send_email"|"update_task"|"complete_task"|"update_calendar_event"|"cancel_calendar_event"|"cancel_reminder"|"ask_clarification"|"request_approval"|"ignore",  // create_task = actionable to-do → synced to Google Tasks; create_reminder = time-based alert only (no Google Tasks sync); update_*/complete_*/cancel_* = mutate an EXISTING item (target via toolPayload.targetId or title)
     "title": string,
     "description": string|null,
     "confidence": number,

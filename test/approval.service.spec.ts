@@ -1,7 +1,7 @@
 import { ApprovalService } from '../src/approvals/approval.service';
 
 describe('ApprovalService.classifyResponse', () => {
-  const svc = new ApprovalService({} as never, {} as never, {} as never);
+  const svc = new ApprovalService({} as never, {} as never, {} as never, {} as never);
 
   // (9) Approval by text
   it('classifies approval words', () => {

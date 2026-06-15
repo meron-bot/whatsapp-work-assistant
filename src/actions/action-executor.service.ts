@@ -41,7 +41,20 @@ export type ExecutionResult =
   | { type: 'email'; sent: boolean; to: string | null; reason?: 'not_connected' | 'send_failed' }
   | { type: 'clarification'; id: string }
   | { type: 'approval'; id: string }
-  | { type: 'ignored'; reason: string };
+  | { type: 'ignored'; reason: string }
+  // A mutation of an existing item (move/change/cancel/complete). googleSynced
+  // follows the same honesty contract as creation: false means the change did
+  // NOT reach Google (not connected / API error / never synced) and the reply
+  // must say so. conflict=true means an updated event now overlaps another one.
+  | {
+      type: 'mutation';
+      op: 'updated' | 'completed' | 'cancelled';
+      entity: 'task' | 'calendar_event' | 'reminder';
+      id: string;
+      title: string;
+      googleSynced: boolean;
+      conflict?: boolean;
+    };
 
 /** Parse an ISO datetime string; returns null for missing or unparseable values
  *  (anti-hallucination: never persist an Invalid Date or a guessed time). */
@@ -106,11 +119,13 @@ export class ActionExecutorService {
         sourceMessageId: ctx.sourceMessageId,
         plannerContext: { action } as Prisma.InputJsonValue,
       });
-      // Unfinished work -> open loop.
+      // Unfinished work -> open loop, linked to the clarification so it closes
+      // automatically once the owner answers (or it expires).
       await this.openLoops.create({
         title: action.title,
         description: `Waiting for clarification: ${decision.reason}`,
         status: 'waiting_for_owner',
+        linkedClarificationId: clarification.id,
         sourceMessageId: ctx.sourceMessageId,
       });
       return { type: 'clarification', id: clarification.id };
@@ -131,11 +146,13 @@ export class ActionExecutorService {
           riskReason: decision.reason,
         },
       });
+      // Linked to the approval so it closes automatically once the owner
+      // approves (action then runs) or rejects.
       await this.openLoops.create({
         title: action.title,
         description: `Waiting for approval: ${decision.reason}`,
         status: 'waiting_for_owner',
-        linkedDocumentId: null,
+        linkedApprovalId: approval.id,
         sourceMessageId: ctx.sourceMessageId,
       });
       return { type: 'approval', id: approval.id };
@@ -158,6 +175,16 @@ export class ActionExecutorService {
         return this.createDocumentDraft(action, ctx);
       case 'send_email':
         return this.sendEmail(action, ctx);
+      case 'update_task':
+        return this.updateTask(action, ctx);
+      case 'complete_task':
+        return this.completeTask(action, ctx);
+      case 'update_calendar_event':
+        return this.updateCalendarEvent(action, ctx);
+      case 'cancel_calendar_event':
+        return this.cancelCalendarEvent(action, ctx);
+      case 'cancel_reminder':
+        return this.cancelReminder(action, ctx);
       case 'save_file':
         // Media is already persisted on ingest; just acknowledge + audit.
         await this.audit.success('action.save_file', { action }, {
@@ -332,6 +359,284 @@ export class ActionExecutorService {
     }
   }
 
+  // --- mutations of existing items -----------------------------------------
+
+  /**
+   * Resolve which existing row a mutation targets: by toolPayload.targetId (the
+   * id the planner copied from the recent-actions digest) first, then by title
+   * match against recent live rows (newest first; either string may contain the
+   * other, so "הפגישה עם עומרי" matches "פגישה עם עומרי - סטטוס"). Null = ask.
+   */
+  private matchByTitle<T extends { title: string }>(rows: T[], wanted: string): T | null {
+    const needle = wanted.trim().toLowerCase();
+    if (!needle) return null;
+    return (
+      rows.find((r) => {
+        const t = r.title.trim().toLowerCase();
+        return t.includes(needle) || needle.includes(t);
+      }) ?? null
+    );
+  }
+
+  private targetId(action: PlannerAction): string | null {
+    const id = action.toolPayload?.targetId;
+    return typeof id === 'string' && id.trim() ? id.trim() : null;
+  }
+
+  /** The owner referenced an item we can't find — ask which one, never guess. */
+  private async unknownTarget(
+    action: PlannerAction,
+    ctx: ExecuteContext,
+    what: string,
+  ): Promise<ExecutionResult> {
+    return this.askForMissing(action, ctx, `לא מצאתי ${what} בשם "${action.title}". למה התכוונת?`);
+  }
+
+  private async updateTask(action: PlannerAction, ctx: ExecuteContext): Promise<ExecutionResult> {
+    const id = this.targetId(action);
+    const task = id
+      ? await this.prisma.task.findUnique({ where: { id } })
+      : this.matchByTitle(
+          await this.prisma.task.findMany({
+            where: { status: { in: ['open', 'in_progress', 'waiting'] } },
+            orderBy: { createdAt: 'desc' },
+            take: 25,
+          }),
+          action.title,
+        );
+    if (!task) return this.unknownTarget(action, ctx, 'משימה פתוחה');
+
+    const dueDate = parseIso(action.dueDate);
+    const updated = await this.prisma.task.update({
+      where: { id: task.id },
+      data: {
+        ...(dueDate ? { dueDate } : {}),
+        ...(action.description ? { description: action.description } : {}),
+        ...(action.priority ? { priority: action.priority } : {}),
+      },
+    });
+
+    let googleSynced = false;
+    if (task.googleTaskId && (await this.googleAuth.isAuthorized())) {
+      try {
+        await this.tasks.updateTask(task.googleTaskId, {
+          notes: action.description,
+          due: dueDate ? dueDate.toISOString() : null,
+        });
+        googleSynced = true;
+      } catch (e) {
+        this.logger.warn('Google Tasks update failed', { error: (e as Error).message });
+      }
+    }
+
+    await this.audit.success('task.updated', { taskId: task.id, googleSynced }, {
+      entityType: 'Task',
+      entityId: task.id,
+    });
+    return {
+      type: 'mutation',
+      op: 'updated',
+      entity: 'task',
+      id: task.id,
+      title: updated.title,
+      googleSynced,
+    };
+  }
+
+  private async completeTask(action: PlannerAction, ctx: ExecuteContext): Promise<ExecutionResult> {
+    const id = this.targetId(action);
+    const task = id
+      ? await this.prisma.task.findUnique({ where: { id } })
+      : this.matchByTitle(
+          await this.prisma.task.findMany({
+            where: { status: { in: ['open', 'in_progress', 'waiting'] } },
+            orderBy: { createdAt: 'desc' },
+            take: 25,
+          }),
+          action.title,
+        );
+    if (!task) return this.unknownTarget(action, ctx, 'משימה פתוחה');
+
+    await this.prisma.task.update({ where: { id: task.id }, data: { status: 'done' } });
+    // The task is finished — its open loop is too.
+    await this.prisma.openLoop.updateMany({
+      where: { linkedTaskId: task.id, status: { in: ['open', 'waiting_for_owner', 'waiting_for_other'] } },
+      data: { status: 'done' },
+    });
+
+    let googleSynced = false;
+    if (task.googleTaskId && (await this.googleAuth.isAuthorized())) {
+      try {
+        await this.tasks.completeTask(task.googleTaskId);
+        googleSynced = true;
+      } catch (e) {
+        this.logger.warn('Google Tasks complete failed', { error: (e as Error).message });
+      }
+    }
+
+    await this.audit.success('task.completed', { taskId: task.id, googleSynced }, {
+      entityType: 'Task',
+      entityId: task.id,
+    });
+    return {
+      type: 'mutation',
+      op: 'completed',
+      entity: 'task',
+      id: task.id,
+      title: task.title,
+      googleSynced,
+    };
+  }
+
+  private async updateCalendarEvent(
+    action: PlannerAction,
+    ctx: ExecuteContext,
+  ): Promise<ExecutionResult> {
+    const id = this.targetId(action);
+    const event = id
+      ? await this.prisma.calendarEvent.findUnique({ where: { id } })
+      : this.matchByTitle(
+          await this.prisma.calendarEvent.findMany({
+            where: { status: { not: 'cancelled' } },
+            orderBy: { createdAt: 'desc' },
+            take: 25,
+          }),
+          action.title,
+        );
+    if (!event) return this.unknownTarget(action, ctx, 'אירוע ביומן');
+
+    // New times: keep the event's current duration when only a new start is given.
+    const start = parseIso(action.startTime);
+    const durationMs = event.endTime.getTime() - event.startTime.getTime();
+    const end =
+      parseIso(action.endTime) ?? (start ? new Date(start.getTime() + durationMs) : null);
+
+    const updated = await this.prisma.calendarEvent.update({
+      where: { id: event.id },
+      data: {
+        ...(start ? { startTime: start, endTime: end! } : {}),
+        ...(action.description ? { description: action.description } : {}),
+      },
+    });
+
+    let googleSynced = false;
+    let conflict = false;
+    if (event.googleEventId && (await this.googleAuth.isAuthorized())) {
+      if (start) conflict = await this.hasConflict(start, end!);
+      try {
+        await this.calendar.updateEvent(event.googleEventId, {
+          description: action.description,
+          startTime: start?.toISOString(),
+          endTime: start ? end!.toISOString() : undefined,
+        });
+        googleSynced = true;
+      } catch (e) {
+        this.logger.warn('Google Calendar update failed', { error: (e as Error).message });
+      }
+    }
+
+    await this.audit.success('calendar_event.updated', { eventId: event.id, googleSynced }, {
+      entityType: 'CalendarEvent',
+      entityId: event.id,
+    });
+    return {
+      type: 'mutation',
+      op: 'updated',
+      entity: 'calendar_event',
+      id: event.id,
+      title: updated.title,
+      googleSynced,
+      conflict,
+    };
+  }
+
+  private async cancelCalendarEvent(
+    action: PlannerAction,
+    ctx: ExecuteContext,
+  ): Promise<ExecutionResult> {
+    const id = this.targetId(action);
+    const event = id
+      ? await this.prisma.calendarEvent.findUnique({ where: { id } })
+      : this.matchByTitle(
+          await this.prisma.calendarEvent.findMany({
+            where: { status: { not: 'cancelled' } },
+            orderBy: { createdAt: 'desc' },
+            take: 25,
+          }),
+          action.title,
+        );
+    if (!event) return this.unknownTarget(action, ctx, 'אירוע ביומן');
+
+    await this.prisma.calendarEvent.update({
+      where: { id: event.id },
+      data: { status: 'cancelled' },
+    });
+    await this.prisma.openLoop.updateMany({
+      where: { linkedEventId: event.id, status: { in: ['open', 'waiting_for_owner', 'waiting_for_other'] } },
+      data: { status: 'ignored' },
+    });
+
+    let googleSynced = false;
+    if (event.googleEventId && (await this.googleAuth.isAuthorized())) {
+      try {
+        await this.calendar.cancelEvent(event.googleEventId);
+        googleSynced = true;
+      } catch (e) {
+        this.logger.warn('Google Calendar cancel failed', { error: (e as Error).message });
+      }
+    }
+
+    await this.audit.success('calendar_event.cancelled', { eventId: event.id, googleSynced }, {
+      entityType: 'CalendarEvent',
+      entityId: event.id,
+    });
+    return {
+      type: 'mutation',
+      op: 'cancelled',
+      entity: 'calendar_event',
+      id: event.id,
+      title: event.title,
+      googleSynced,
+    };
+  }
+
+  private async cancelReminder(
+    action: PlannerAction,
+    ctx: ExecuteContext,
+  ): Promise<ExecutionResult> {
+    const id = this.targetId(action);
+    const reminder = id
+      ? await this.prisma.reminder.findUnique({ where: { id } })
+      : this.matchByTitle(
+          await this.prisma.reminder.findMany({
+            where: { status: 'pending' },
+            orderBy: { createdAt: 'desc' },
+            take: 25,
+          }),
+          action.title,
+        );
+    if (!reminder) return this.unknownTarget(action, ctx, 'תזכורת פעילה');
+
+    await this.prisma.reminder.update({
+      where: { id: reminder.id },
+      data: { status: 'cancelled' },
+    });
+    await this.audit.success('reminder.cancelled', { reminderId: reminder.id }, {
+      entityType: 'Reminder',
+      entityId: reminder.id,
+    });
+    // Reminders are local-only — nothing in Google to sync, so the honest-sync
+    // contract is trivially satisfied.
+    return {
+      type: 'mutation',
+      op: 'cancelled',
+      entity: 'reminder',
+      id: reminder.id,
+      title: reminder.title,
+      googleSynced: true,
+    };
+  }
+
   /** Fall back to a clarification when a required value is missing/unparseable. */
   private async askForMissing(
     action: PlannerAction,
@@ -349,6 +654,7 @@ export class ActionExecutorService {
       title: action.title,
       description: 'Waiting for clarification',
       status: 'waiting_for_owner',
+      linkedClarificationId: clarification.id,
       sourceMessageId: ctx.sourceMessageId,
     });
     return { type: 'clarification', id: clarification.id };
