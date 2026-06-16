@@ -47,6 +47,10 @@ export interface WhatsAppIncomingRaw {
   from: string;
   timestamp: string;
   type: string;
+  /** Present when the owner used WhatsApp's "reply" on a specific earlier
+   *  message; `id` is that quoted message's whatsappMessageId. Lets the assistant
+   *  resolve "this/it/that" against the exact message being replied to. */
+  context?: { id?: string; from?: string };
   text?: { body: string };
   audio?: { id: string; mime_type: string; voice?: boolean };
   image?: { id: string; mime_type: string; caption?: string };

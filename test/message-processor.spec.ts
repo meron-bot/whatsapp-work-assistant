@@ -353,6 +353,38 @@ describe('MessageProcessorService', () => {
     );
   });
 
+  // Reply context: when the owner uses WhatsApp's "reply" on a specific earlier
+  // message, that quoted message's text is fed to the planner as `replyingTo` so
+  // it can resolve "this/it/that" against the exact thing he pointed at.
+  it('passes the quoted (reply-to) message text to the planner', async () => {
+    const row = baseRow({
+      textContent: 'זה כבר ביומן, תמחק מהמשימות',
+      rawPayload: { context: { id: 'wamid.quoted' } },
+    });
+    const d = makeDeps(row);
+    // The incoming row and the quoted message are both fetched via findUnique.
+    d.prisma.whatsAppMessage.findUnique.mockImplementation(({ where }: any) =>
+      Promise.resolve(
+        where.whatsappMessageId === 'wamid.quoted'
+          ? { textContent: '15:00 Averto - פגישת המשך' }
+          : row,
+      ),
+    );
+
+    await d.svc.process('wamid.1');
+
+    const ctx = d.planner.plan.mock.calls[0][0];
+    expect(ctx.replyingTo).toBe('15:00 Averto - פגישת המשך');
+  });
+
+  // No quote → replyingTo is null (the common case must not invent a subject).
+  it('leaves replyingTo null when the message is not a reply', async () => {
+    const d = makeDeps(baseRow({ textContent: 'מה המשימות שלי' }));
+    await d.svc.process('wamid.1');
+    const ctx = d.planner.plan.mock.calls[0][0];
+    expect(ctx.replyingTo).toBeNull();
+  });
+
   // Action memory: recently executed work (tasks/events/...) is fed to the
   // planner so it can resolve "הפגישה שקבעת" and never re-create what it did.
   it('feeds recently executed actions to the planner', async () => {

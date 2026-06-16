@@ -149,6 +149,7 @@ export class MessageProcessorService {
         knownProjects: await this.knownProjects(),
         memories,
         recentContext,
+        replyingTo: await this.buildReplyingTo(row.rawPayload),
         recentActions: await this.buildRecentActions(),
         pendingApproval: pendingApproval
           ? { id: pendingApproval.id, description: pendingApproval.description }
@@ -543,6 +544,30 @@ export class MessageProcessorService {
         return `${who}: ${r.textContent}`;
       })
       .join('\n');
+  }
+
+  /**
+   * When the incoming message is a WhatsApp "reply" to a specific earlier
+   * message, return that quoted message's text so the planner can resolve
+   * "this/it/that" against the exact thing the owner pointed at — not just the
+   * latest turn. The quoted message's id rides in the raw webhook payload
+   * (`context.id`); we look up its stored text by whatsappMessageId. Best-effort:
+   * a missing/unknown quote returns null and never blocks processing.
+   */
+  private async buildReplyingTo(rawPayload: unknown): Promise<string | null> {
+    try {
+      const quotedId = (rawPayload as { context?: { id?: string } })?.context?.id;
+      if (!quotedId) return null;
+      const quoted = await this.prisma.whatsAppMessage.findUnique({
+        where: { whatsappMessageId: quotedId },
+        select: { textContent: true },
+      });
+      const text = quoted?.textContent?.trim();
+      return text ? text : null;
+    } catch (e) {
+      this.logger.warn('Failed to resolve quoted (reply-to) message', { error: (e as Error).message });
+      return null;
+    }
   }
 
   /**

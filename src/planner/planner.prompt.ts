@@ -19,6 +19,9 @@ export interface PlannerContextInput {
   timezone: string;
   ownerName?: string;
   recentContext?: string;
+  /** The text of the specific earlier message the owner is REPLYING TO (WhatsApp
+   *  quote), when this message is a reply. The subject of "this/it/that". */
+  replyingTo?: string | null;
   pendingClarification?: { id: string; question: string; missingFields: unknown } | null;
   pendingApproval?: { id: string; description: string } | null;
   knownProjects?: string[];
@@ -85,6 +88,13 @@ export function buildPlannerUserPrompt(ctx: PlannerContextInput): string {
   if (ctx.pendingApproval) {
     lines.push(
       `PENDING APPROVAL the owner may be responding to:\n${ctx.pendingApproval.description}`,
+    );
+  }
+  if (ctx.replyingTo) {
+    lines.push(
+      `THE OWNER IS REPLYING TO THIS SPECIFIC EARLIER MESSAGE (WhatsApp quote). It is ` +
+        `the subject of any "this/that/it/here" in the incoming message — resolve the ` +
+        `reference against it FIRST:\n"${ctx.replyingTo}"`,
     );
   }
   lines.push('--- INCOMING MESSAGE ---');

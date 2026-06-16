@@ -53,10 +53,10 @@ export class DailyPlanningService {
     if (approvals) lines.push(`ממתינים לאישור: ${approvals}.`);
     if (clarifications) lines.push(`ממתינים להבהרה: ${clarifications}.`);
 
-    const loops = await this.prisma.openLoop.count({
-      where: { status: { in: ['open', 'waiting_for_owner', 'waiting_for_other'] } },
-    });
-    if (loops) lines.push(`לולאות פתוחות: ${loops}.`);
+    // "Open loops" are an INTERNAL tracking mechanism — never surface the raw
+    // count to the owner. He found it meaningless ("I don't understand what this
+    // is"); the follow-up watcher (followUpScan) already nudges about the real,
+    // by-name waiting items, which is the useful half.
 
     await this.notify(lines.join('\n\n'));
   }
@@ -81,15 +81,13 @@ export class DailyPlanningService {
     });
     const open = await this.prisma.task.count({ where: { status: { in: ['open', 'in_progress'] } } });
     const approvals = await this.prisma.approval.count({ where: { status: 'pending' } });
-    const loops = await this.prisma.openLoop.count({
-      where: { status: { in: ['open', 'waiting_for_owner', 'waiting_for_other'] } },
-    });
+    // No "open loops" count here either — it is internal jargon the owner asked
+    // never to see again.
     const lines = [
       'סיכום יום:',
       `הושלמו היום: ${done} משימות.`,
       `נותרו פתוחות: ${open}.`,
       approvals ? `ממתינים לאישור: ${approvals}.` : '',
-      loops ? `לולאות פתוחות: ${loops}.` : '',
       'מה לסגור ומה להעביר למחר?',
     ].filter(Boolean);
     await this.notify(lines.join('\n'));
