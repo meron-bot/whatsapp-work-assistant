@@ -4,6 +4,7 @@ import { env } from '../config/env';
 import { AppLogger } from '../logger/logger.service';
 import { GoogleAuthService } from '../google/google-auth.service';
 import { GoogleCalendarService } from '../google/google-calendar.service';
+import { GoogleTasksService } from '../google/google-tasks.service';
 import { ClarificationService } from '../clarifications/clarification.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReminderService } from '../reminders/reminder.service';
@@ -25,6 +26,7 @@ export class DailyPlanningService {
     private readonly reminders: ReminderService,
     private readonly calendar: GoogleCalendarService,
     private readonly googleAuth: GoogleAuthService,
+    private readonly tasks: GoogleTasksService,
     private readonly clarifications: ClarificationService,
   ) {}
 
@@ -36,15 +38,19 @@ export class DailyPlanningService {
     const meetings = await this.todaysMeetings();
     lines.push(meetings.length ? `פגישות היום:\n${meetings.join('\n')}` : 'אין פגישות היום.');
 
-    const tasks = await this.prisma.task.findMany({
-      where: { status: { in: ['open', 'in_progress'] } },
-      orderBy: [{ priority: 'desc' }, { dueDate: 'asc' }],
-      take: 5,
-    });
-    if (tasks.length) lines.push('משימות עיקריות:\n' + tasks.map((t) => `• ${t.title}`).join('\n'));
+    // Source of truth = the owner's Google Tasks (same list `tasks_list` reads),
+    // NOT the internal Prisma mirror — that mirror never learns about tasks the
+    // owner completes directly in the Google Tasks app (sync is one-way), so it
+    // accumulates ghost rows and the briefing used to surface tasks that no
+    // longer exist.
+    const open = await this.openTasks();
+    const main = this.sortByDue(open).slice(0, 5);
+    if (main.length) lines.push('משימות עיקריות:\n' + main.map((t) => `• ${t.title ?? ''}`).join('\n'));
 
-    const overdue = await this.prisma.task.findMany({
-      where: { status: { in: ['open', 'in_progress'] }, dueDate: { lt: new Date() } },
+    const today = this.ymd(new Date());
+    const overdue = open.filter((t) => {
+      const d = this.dueYmd(t);
+      return d !== null && d < today;
     });
     if (overdue.length) lines.push(`באיחור: ${overdue.length} משימות.`);
 
@@ -64,11 +70,16 @@ export class DailyPlanningService {
   @Cron('0 13 * * *', { timeZone: 'Asia/Jerusalem' })
   async middayCheckin(): Promise<void> {
     if (!isWorkday()) return; // quiet-hours gate
-    const urgent = await this.prisma.task.findMany({
-      where: { status: { in: ['open', 'in_progress'] }, priority: 'urgent' },
-    });
+    // Google Tasks has no priority field, so "pressing" = overdue or due today.
+    const today = this.ymd(new Date());
+    const pressing = this.sortByDue(
+      (await this.openTasks()).filter((t) => {
+        const d = this.dueYmd(t);
+        return d !== null && d <= today;
+      }),
+    );
     const lines = ['צ׳ק-אין צהריים. מה הספקת עד עכשיו?'];
-    if (urgent.length) lines.push('דחוף ופתוח:\n' + urgent.map((t) => `• ${t.title}`).join('\n'));
+    if (pressing.length) lines.push('דחוף להיום:\n' + pressing.map((t) => `• ${t.title ?? ''}`).join('\n'));
     lines.push('האם השתנו סדרי העדיפויות?');
     await this.notify(lines.join('\n\n'));
   }
@@ -76,10 +87,8 @@ export class DailyPlanningService {
   @Cron('30 18 * * *', { timeZone: 'Asia/Jerusalem' })
   async endOfDay(): Promise<void> {
     if (!isWorkday()) return; // quiet-hours gate
-    const done = await this.prisma.task.count({
-      where: { status: 'done', updatedAt: { gte: this.startOfToday() } },
-    });
-    const open = await this.prisma.task.count({ where: { status: { in: ['open', 'in_progress'] } } });
+    const done = await this.completedTodayCount();
+    const open = (await this.openTasks()).length;
     const approvals = await this.prisma.approval.count({ where: { status: 'pending' } });
     // No "open loops" count here either — it is internal jargon the owner asked
     // never to see again.
@@ -102,21 +111,21 @@ export class DailyPlanningService {
   @Cron('0 9 * * *', { timeZone: 'Asia/Jerusalem' })
   async deadlineRiskScan(now: Date = new Date()): Promise<void> {
     if (!isWithinActiveHours(now)) return;
-    const horizon = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    const atRisk = await this.prisma.task.findMany({
-      where: {
-        status: { in: ['open', 'in_progress'] },
-        dueDate: { not: null, lte: horizon },
-      },
-      orderBy: [{ dueDate: 'asc' }, { priority: 'desc' }],
-      take: 10,
-    });
+    const today = this.ymd(now);
+    const tomorrow = this.ymd(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+    const atRisk = this.sortByDue(
+      (await this.openTasks()).filter((t) => {
+        const d = this.dueYmd(t);
+        return d !== null && d <= tomorrow;
+      }),
+    ).slice(0, 10);
     if (!atRisk.length) return;
     const lines = ['⏰ דדליינים שדורשים תשומת לב:'];
     for (const t of atRisk) {
-      const overdue = t.dueDate ? t.dueDate < now : false;
-      const when = t.dueDate ? this.fmtDate(t.dueDate) : '';
-      lines.push(`• ${t.title} — ${overdue ? `באיחור (${when})` : `עד ${when}`}`);
+      const d = this.dueYmd(t);
+      const overdue = d !== null && d < today;
+      const when = d ? this.fmtDate(new Date(d)) : '';
+      lines.push(`• ${t.title ?? ''} — ${overdue ? `באיחור (${when})` : `עד ${when}`}`);
     }
     await this.notify(lines.join('\n'));
   }
@@ -234,6 +243,46 @@ export class DailyPlanningService {
    *  so every briefing and watcher notifies through one place. */
   private notify(body: string): Promise<string | null> {
     return this.whatsapp.sendText(env().OWNER_WHATSAPP_NUMBER, body);
+  }
+
+  /** The owner's open Google Tasks (the real to-do list `tasks_list` reads).
+   *  Empty if Google isn't connected or the call fails — the briefing simply
+   *  omits the section then rather than falling back to the stale Prisma mirror. */
+  private async openTasks(): Promise<Array<{ title?: string | null; due?: string | null }>> {
+    if (!(await this.googleAuth.isAuthorized())) return [];
+    try {
+      return await this.tasks.listOpen();
+    } catch (e) {
+      this.logger.warn('Could not load Google Tasks for briefing', { error: (e as Error).message });
+      return [];
+    }
+  }
+
+  /** How many tasks the owner completed today (for the end-of-day summary). */
+  private async completedTodayCount(): Promise<number> {
+    if (!(await this.googleAuth.isAuthorized())) return 0;
+    try {
+      return (await this.tasks.listCompletedSince(this.startOfToday())).length;
+    } catch (e) {
+      this.logger.warn('Could not load completed tasks for end-of-day', { error: (e as Error).message });
+      return 0;
+    }
+  }
+
+  /** A Google task's due DATE as YYYY-MM-DD (its `due` carries only a date), or
+   *  null when it has none. Compared as strings against ymd(...). */
+  private dueYmd(t: { due?: string | null }): string | null {
+    return t.due ? t.due.slice(0, 10) : null;
+  }
+
+  /** A date as YYYY-MM-DD in the owner's timezone (en-CA => ISO ordering). */
+  private ymd(d: Date): string {
+    return d.toLocaleDateString('en-CA', { timeZone: env().OWNER_TIMEZONE });
+  }
+
+  /** Tasks soonest-due first; undated tasks sort last. */
+  private sortByDue<T extends { due?: string | null }>(items: T[]): T[] {
+    return [...items].sort((a, b) => (a.due ?? '9999-99-99').localeCompare(b.due ?? '9999-99-99'));
   }
 
   private async todaysMeetings(): Promise<string[]> {

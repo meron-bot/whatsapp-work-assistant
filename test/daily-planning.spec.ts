@@ -18,6 +18,10 @@ function makeDeps() {
   const reminders = { dispatchDue: jest.fn() };
   const calendar = { listForDay: jest.fn() };
   const googleAuth = { isAuthorized: jest.fn().mockResolvedValue(false) };
+  const tasks = {
+    listOpen: jest.fn().mockResolvedValue([]),
+    listCompletedSince: jest.fn().mockResolvedValue([]),
+  };
   const clarifications = { expireStale: jest.fn().mockResolvedValue({ count: 0 }) };
   const svc = new DailyPlanningService(
     prisma as any,
@@ -25,17 +29,18 @@ function makeDeps() {
     reminders as any,
     calendar as any,
     googleAuth as any,
+    tasks as any,
     clarifications as any,
   );
-  return { svc, prisma, whatsapp, clarifications };
+  return { svc, prisma, whatsapp, googleAuth, tasks, clarifications };
 }
 
 describe('DailyPlanningService — proactive watchers', () => {
   describe('deadlineRiskScan', () => {
     it('stays silent outside the quiet-hours window', async () => {
-      const { svc, prisma, whatsapp } = makeDeps();
+      const { svc, tasks, whatsapp } = makeDeps();
       await svc.deadlineRiskScan(QUIET);
-      expect(prisma.task.findMany).not.toHaveBeenCalled();
+      expect(tasks.listOpen).not.toHaveBeenCalled();
       expect(whatsapp.sendText).not.toHaveBeenCalled();
     });
 
@@ -46,10 +51,12 @@ describe('DailyPlanningService — proactive watchers', () => {
     });
 
     it('nudges once, flagging overdue vs upcoming tasks', async () => {
-      const { svc, prisma, whatsapp } = makeDeps();
-      prisma.task.findMany.mockResolvedValue([
-        { title: 'להגיש דוח', dueDate: new Date('2026-06-07T07:00:00Z') }, // before ACTIVE → overdue
-        { title: 'להתקשר לספק', dueDate: new Date('2026-06-08T12:00:00Z') }, // after ACTIVE → upcoming
+      const { svc, googleAuth, tasks, whatsapp } = makeDeps();
+      googleAuth.isAuthorized.mockResolvedValue(true);
+      // Google Tasks' `due` carries only a date (YYYY-MM-DD at midnight UTC).
+      tasks.listOpen.mockResolvedValue([
+        { title: 'להגיש דוח', due: '2026-06-07T00:00:00.000Z' }, // before today → overdue
+        { title: 'להתקשר לספק', due: '2026-06-08T00:00:00.000Z' }, // due today → upcoming
       ]);
       await svc.deadlineRiskScan(ACTIVE);
       expect(whatsapp.sendText).toHaveBeenCalledTimes(1);

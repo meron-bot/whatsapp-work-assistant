@@ -67,4 +67,17 @@ export class GoogleTasksService {
     const res = await tasks.tasks.list({ tasklist: '@default', showCompleted: false });
     return res.data.items ?? [];
   }
+
+  /** Tasks completed at/after `since` — used for the end-of-day "done today"
+   *  count. Completed tasks are hidden by default, so both flags are required. */
+  async listCompletedSince(since: Date) {
+    const tasks = await this.api();
+    const res = await tasks.tasks.list({
+      tasklist: '@default',
+      showCompleted: true,
+      showHidden: true,
+      completedMin: since.toISOString(),
+    });
+    return (res.data.items ?? []).filter((t) => t.status === 'completed');
+  }
 }

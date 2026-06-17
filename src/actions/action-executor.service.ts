@@ -383,6 +383,24 @@ export class ActionExecutorService {
     return typeof id === 'string' && id.trim() ? id.trim() : null;
   }
 
+  /** Find a task directly in the owner's open Google Tasks, matched by title.
+   *  Used when a mutation has no Prisma mirror row to act on (e.g. the owner
+   *  closing a task that only ever lived in Google Tasks). */
+  private async findGoogleTaskByTitle(title: string): Promise<{ id: string; title: string } | null> {
+    if (!(await this.googleAuth.isAuthorized())) return null;
+    try {
+      const items = await this.tasks.listOpen();
+      const match = this.matchByTitle(
+        items.map((i) => ({ title: i.title ?? '', id: i.id ?? '' })),
+        title,
+      );
+      return match?.id ? { id: match.id, title: match.title } : null;
+    } catch (e) {
+      this.logger.warn('Google Tasks lookup failed during mutation', { error: (e as Error).message });
+      return null;
+    }
+  }
+
   /** The owner referenced an item we can't find — ask which one, never guess. */
   private async unknownTarget(
     action: PlannerAction,
@@ -404,7 +422,28 @@ export class ActionExecutorService {
           }),
           action.title,
         );
-    if (!task) return this.unknownTarget(action, ctx, 'משימה פתוחה');
+    if (!task) {
+      // Google-native task (no Prisma mirror row): patch it directly in Google.
+      // Priority has no Google Tasks equivalent, so only notes/due are applied.
+      const g = await this.findGoogleTaskByTitle(action.title);
+      if (!g) return this.unknownTarget(action, ctx, 'משימה פתוחה');
+      const due = parseIso(action.dueDate);
+      let synced = false;
+      try {
+        await this.tasks.updateTask(g.id, {
+          notes: action.description,
+          due: due ? due.toISOString() : null,
+        });
+        synced = true;
+      } catch (e) {
+        this.logger.warn('Google Tasks update failed', { error: (e as Error).message });
+      }
+      await this.audit.success('task.updated', { googleTaskId: g.id, googleSynced: synced }, {
+        entityType: 'Task',
+        entityId: g.id,
+      });
+      return { type: 'mutation', op: 'updated', entity: 'task', id: g.id, title: g.title, googleSynced: synced };
+    }
 
     const dueDate = parseIso(action.dueDate);
     const updated = await this.prisma.task.update({
@@ -455,7 +494,25 @@ export class ActionExecutorService {
           }),
           action.title,
         );
-    if (!task) return this.unknownTarget(action, ctx, 'משימה פתוחה');
+    if (!task) {
+      // No internal row — the owner is closing a Google-native task. The morning
+      // briefing and tasks_list both read straight from Google Tasks now, so a
+      // task they showed may have no Prisma mirror row. Complete it in Google.
+      const g = await this.findGoogleTaskByTitle(action.title);
+      if (!g) return this.unknownTarget(action, ctx, 'משימה פתוחה');
+      let synced = false;
+      try {
+        await this.tasks.completeTask(g.id);
+        synced = true;
+      } catch (e) {
+        this.logger.warn('Google Tasks complete failed', { error: (e as Error).message });
+      }
+      await this.audit.success('task.completed', { googleTaskId: g.id, googleSynced: synced }, {
+        entityType: 'Task',
+        entityId: g.id,
+      });
+      return { type: 'mutation', op: 'completed', entity: 'task', id: g.id, title: g.title, googleSynced: synced };
+    }
 
     await this.prisma.task.update({ where: { id: task.id }, data: { status: 'done' } });
     // The task is finished — its open loop is too.

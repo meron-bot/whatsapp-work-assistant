@@ -77,7 +77,12 @@ describe('ActionExecutorService', () => {
       reminders: { create: jest.fn().mockResolvedValue({ id: 'r1' }) },
       openLoops: { create: jest.fn().mockResolvedValue({ id: 'l1' }) },
       documents: { draft: jest.fn() },
-      tasks: { createTask: jest.fn(), completeTask: jest.fn(), updateTask: jest.fn() },
+      tasks: {
+        createTask: jest.fn(),
+        completeTask: jest.fn(),
+        updateTask: jest.fn(),
+        listOpen: jest.fn().mockResolvedValue([]),
+      },
       calendar: { createEvent: jest.fn(), updateEvent: jest.fn(), cancelEvent: jest.fn() },
       googleAuth: { isAuthorized: jest.fn().mockResolvedValue(false) },
       gmail: { sendEmail: jest.fn(), findContactEmail: jest.fn() },
@@ -326,6 +331,27 @@ describe('ActionExecutorService', () => {
     expect(result).toEqual({
       type: 'mutation', op: 'completed', entity: 'task', id: 't7',
       title: 'להתקשר לספק', googleSynced: true,
+    });
+  });
+
+  // The morning briefing and tasks_list read straight from Google Tasks, so the
+  // owner may close a task that has NO Prisma mirror row. It must still complete
+  // in Google — the reported bug was "לא מצאתי משימה פתוחה בשם X".
+  it('completes a Google-native task (no Prisma row) by title, via Google', async () => {
+    deps.googleAuth.isAuthorized.mockResolvedValue(true);
+    deps.prisma.task.findMany.mockResolvedValue([]); // nothing in the internal mirror
+    deps.tasks.listOpen.mockResolvedValue([{ id: 'g9', title: 'סיים את האלגוריתם' }]);
+
+    const result = await svc.runLowRisk(
+      action({ type: 'complete_task', title: 'סיים את האלגוריתם' }),
+      { sourceMessageId: 'm23', plannerOutput: plan(action({})) },
+    );
+
+    expect(deps.tasks.completeTask).toHaveBeenCalledWith('g9');
+    expect(deps.prisma.task.update).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      type: 'mutation', op: 'completed', entity: 'task', id: 'g9',
+      title: 'סיים את האלגוריתם', googleSynced: true,
     });
   });
 
