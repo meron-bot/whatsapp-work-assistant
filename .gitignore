@@ -19,3 +19,8 @@ secrets/
 prisma/*.db
 *.tsbuildinfo
 dump.rdb
+
+# Local flight watcher: config.json holds the SerpApi key; state/report are runtime
+tools/flight-watch/config.json
+tools/flight-watch/state.json
+tools/flight-watch/report.html

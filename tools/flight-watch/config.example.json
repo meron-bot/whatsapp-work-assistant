@@ -1,0 +1,16 @@
+{
+  "_comment": "Copy to config.json and fill serpApiKey. config.json is gitignored.",
+  "serpApiKey": "",
+  "origin": "TLV",
+  "destination": "ZNZ",
+  "windowStart": "2026-07-26",
+  "windowEnd": "2026-08-16",
+  "minNights": 6,
+  "maxNights": 8,
+  "adults": 2,
+  "alertTotalUsd": 2400,
+  "maxStops": 2,
+  "currency": "USD",
+  "searchesPerRun": 12,
+  "verifyPerRun": 3
+}

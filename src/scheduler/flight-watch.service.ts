@@ -359,7 +359,7 @@ function dealMessage(
     urgent ? '🚨 מחיר חריג לזנזיבר — שווה לסגור עכשיו' : '✈️ נמצאה טיסה מתחת לתקציב',
     '',
     `${fmtDate(outbound)} → ${fmtDate(back)}  (${nights} לילות)`,
-    `${entry.stops === 0 ? 'ישירה' : `${entry.stops} עצירות`} · ${entry.airlines?.join(', ') ?? ''}`,
+    `${stopsLabel(entry.stops)} · ${entry.airlines?.join(', ') ?? ''}`,
     '',
     `💵 ${money(entry.price!)} לשני הכרטיסים`,
     `   (${money(perPerson)} לאדם)`,
@@ -401,6 +401,13 @@ function digestMessage(state: WatchState, now: Date): string {
     lines.push('', `שים לב: דילגתי על מסלולים דרך ${state.unknownAirports.join(', ')} — אין לי אזור זמן שלהם לבדיקת שבת.`);
   }
   return lines.join('\n');
+}
+
+/** undefined = not verified yet, so no stop count is known. */
+function stopsLabel(stops: number | undefined): string {
+  if (stops === 0) return 'ישירה';
+  if (stops === 1) return 'עצירה אחת';
+  return typeof stops === 'number' ? `${stops} עצירות` : '—';
 }
 
 function shownPrice(e: ComboState): number {
