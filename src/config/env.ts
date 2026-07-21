@@ -88,6 +88,16 @@ const envSchema = z.object({
     .default('true')
     .transform((v) => v === 'true' || v === '1'),
 
+  // Morning email review: each work-day morning (right after the daily plan),
+  // read YESTERDAY's primary inbox, extract candidate tasks + schedule items
+  // (לו"זים), and send the owner ONE numbered list to approve ("הכל" / numbers).
+  // Nothing is added without the owner's reply. 'false' disables.
+  MORNING_EMAIL_REVIEW_ENABLED: z
+    .string()
+    .optional()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1'),
+
   // Web research sub-agent. 'none' (default) keeps web_research disabled and the
   // planner falls back to assume/ask. Set a provider + its key to enable real
   // web search. Brave and Tavily both return cheap JSON; pick whichever you have.

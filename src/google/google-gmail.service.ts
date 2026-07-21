@@ -18,6 +18,13 @@ export interface GmailHit {
   date: string;
 }
 
+export interface GmailDetailedHit extends GmailHit {
+  /** Decoded plain-text body (best-effort; falls back to the snippet). Used by
+   *  the morning email review, which needs the actual content to extract tasks
+   *  and schedule items — a 100-char snippet is not enough. */
+  body: string;
+}
+
 @Injectable()
 export class GoogleGmailService {
   constructor(private readonly auth: GoogleAuthService) {}
@@ -100,6 +107,39 @@ export class GoogleGmailService {
   }
 
   /**
+   * Like search(), but also fetches and decodes each message's plain-text body.
+   * Costs one extra 'full'-format GET per message, so it is used only where the
+   * body actually matters (the morning email review), never on the hot triage
+   * path. The body is truncated per message to keep the downstream prompt bounded.
+   */
+  async searchDetailed(query: string, maxResults = 15, maxBodyChars = 1500): Promise<GmailDetailedHit[]> {
+    const gmail = await this.api();
+    const list = await gmail.users.messages.list({ userId: 'me', q: query, maxResults });
+    const ids = (list.data.messages ?? []).map((m) => m.id).filter((id): id is string => !!id);
+    const hits: GmailDetailedHit[] = [];
+    for (const id of ids) {
+      const msg = await gmail.users.messages.get({ userId: 'me', id, format: 'full' });
+      const headers = msg.data.payload?.headers ?? [];
+      const h = (name: string) =>
+        headers.find((x) => x.name?.toLowerCase() === name.toLowerCase())?.value ?? '';
+      const snippet = msg.data.snippet ?? '';
+      const body = (
+        extractPlainText(msg.data.payload as MessagePart | null | undefined) || snippet
+      ).slice(0, maxBodyChars);
+      hits.push({
+        id,
+        from: h('From'),
+        to: h('To'),
+        subject: h('Subject'),
+        snippet,
+        date: h('Date'),
+        body,
+      });
+    }
+    return hits;
+  }
+
+  /**
    * Best-effort lookup of a person's email address by name. Searches recent mail
    * involving the name and returns the address whose display-name or local-part
    * matches it, preferring the most frequently seen one. Returns null if nothing
@@ -134,6 +174,50 @@ export class GoogleGmailService {
     for (const c of counts.values()) if (!best || c.n > best.n) best = c;
     return best ? { email: best.email, displayName: best.displayName } : null;
   }
+}
+
+/** Gmail message part shape we care about (a subset of the API type). */
+interface MessagePart {
+  mimeType?: string | null;
+  body?: { data?: string | null } | null;
+  parts?: MessagePart[] | null;
+}
+
+/** base64url → utf-8 text. */
+function decodeB64Url(data: string): string {
+  return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8');
+}
+
+/**
+ * Walk a Gmail message payload and return its readable plain text. Prefers a
+ * text/plain part; falls back to a tag-stripped text/html part; '' if neither
+ * exists. Recurses through multipart containers (multipart/alternative, /mixed).
+ */
+function extractPlainText(payload: MessagePart | null | undefined): string {
+  if (!payload) return '';
+  const plain = findPart(payload, 'text/plain');
+  if (plain?.body?.data) return decodeB64Url(plain.body.data).trim();
+  const html = findPart(payload, 'text/html');
+  if (html?.body?.data) {
+    return decodeB64Url(html.body.data)
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+\n/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+  }
+  return '';
+}
+
+/** Depth-first search for the first part whose mimeType matches. */
+function findPart(part: MessagePart, mimeType: string): MessagePart | null {
+  if (part.mimeType === mimeType) return part;
+  for (const child of part.parts ?? []) {
+    const found = findPart(child, mimeType);
+    if (found) return found;
+  }
+  return null;
 }
 
 /** Parse an RFC-ish address header ("Name" <a@b>, a@b, Name <a@b>, comma list). */
