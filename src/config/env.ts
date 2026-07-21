@@ -98,6 +98,39 @@ const envSchema = z.object({
     .default('true')
     .transform((v) => v === 'true' || v === '1'),
 
+  // Flight deal watcher (TLV↔ZNZ for two, Shabbat-safe). Unlike the other
+  // watchers this one costs real money per run (SerpApi), so it is OPT-IN:
+  // it stays idle until both the flag and the key are set.
+  FLIGHT_WATCH_ENABLED: z
+    .string()
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
+  SERPAPI_API_KEY: z.string().optional().default(''),
+  FLIGHT_WATCH_ORIGIN: z.string().default('TLV'),
+  FLIGHT_WATCH_DESTINATION: z.string().default('ZNZ'),
+  // Outbound dates are searched across [START, END]; each is paired with every
+  // trip length in [MIN_NIGHTS, MAX_NIGHTS].
+  FLIGHT_WATCH_WINDOW_START: z.string().default('2026-07-26'),
+  FLIGHT_WATCH_WINDOW_END: z.string().default('2026-08-16'),
+  FLIGHT_WATCH_MIN_NIGHTS: z.coerce.number().default(6),
+  FLIGHT_WATCH_MAX_NIGHTS: z.coerce.number().default(8),
+  FLIGHT_WATCH_ADULTS: z.coerce.number().default(2),
+  // Alert threshold for the WHOLE booking (both tickets), matching how the
+  // agent reports prices. $1,200 per person → $2,400 total.
+  FLIGHT_WATCH_ALERT_TOTAL: z.coerce.number().default(2400),
+  // SerpApi `stops`: 0 any, 1 nonstop only, 2 ≤1 stop, 3 ≤2 stops. Default keeps
+  // one-stop options in play (they are often far cheaper) while the ranking
+  // still surfaces nonstop first when the price is close.
+  FLIGHT_WATCH_MAX_STOPS: z.coerce.number().default(2),
+  FLIGHT_WATCH_CURRENCY: z.string().default('USD'),
+  // Quota budget: requests spent per sweep, and how many of those may be spent
+  // on phase-2 return-leg verification. See flight-watch.service.ts.
+  FLIGHT_WATCH_SEARCHES_PER_RUN: z.coerce.number().default(12),
+  FLIGHT_WATCH_VERIFY_PER_RUN: z.coerce.number().default(3),
+  // Hour (owner-local) from which the once-a-day status digest may be sent.
+  FLIGHT_WATCH_DIGEST_HOUR: z.coerce.number().default(9),
+
   // Web research sub-agent. 'none' (default) keeps web_research disabled and the
   // planner falls back to assume/ask. Set a provider + its key to enable real
   // web search. Brave and Tavily both return cheap JSON; pick whichever you have.
