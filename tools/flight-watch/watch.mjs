@@ -276,6 +276,10 @@ function parseOptions(raw) {
         departureTime: dep.time,
         arrivalAirport: arr.id,
         arrivalTime: arr.time,
+        // Extra fields for the schedule display; checkShabbat ignores them.
+        airline: leg.airline,
+        flightNumber: leg.flight_number,
+        durationMin: typeof leg.duration === 'number' ? leg.duration : undefined,
       });
       if (leg.airline) airlines.add(leg.airline);
     }
@@ -427,6 +431,64 @@ function fmtDate(isoDay) {
   return `${d.getUTCDate()}.${d.getUTCMonth() + 1} (${names[d.getUTCDay()]}')`;
 }
 
+/** "2026-07-31 07:15" → "31.7 07:15" (date kept so overnight legs are clear). */
+function fmtTime(local) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(local || ''));
+  return m ? `${+m[3]}.${+m[2]} ${m[4]}:${m[5]}` : String(local || '');
+}
+
+/** minutes → "5ש 55ד" / "12ש" / "40ד". */
+function hoursMin(min) {
+  if (min == null || min < 0) return '';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h && m ? `${h}ש ${m}ד` : h ? `${h}ש` : `${m}ד`;
+}
+
+/** Naive local minutes between two wall-clock strings at the SAME airport (so
+ *  the timezone cancels) — used for layover length. */
+function layoverMin(arrLocal, depLocal) {
+  const p = (s) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(s || ''));
+    return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : null;
+  };
+  const a = p(arrLocal);
+  const b = p(depLocal);
+  return a != null && b != null ? Math.round((b - a) / 60000) : null;
+}
+
+/** Flight length: prefer SerpApi's per-leg duration; else compute tz-correctly
+ *  from the two airports' zones (departure and arrival differ). */
+function legDurationMin(seg) {
+  if (typeof seg.durationMin === 'number') return seg.durationMin;
+  const u = new Set();
+  const d = toInstant(seg.departureTime, seg.departureAirport, u);
+  const a = toInstant(seg.arrivalTime, seg.arrivalAirport, u);
+  return d && a ? Math.round((a.getTime() - d.getTime()) / 60000) : null;
+}
+
+/** One journey's schedule as HTML: a line per flight leg, plus a layover line
+ *  between consecutive legs at the same airport. */
+function renderItinerary(labelHe, segments) {
+  if (!segments || !segments.length) return '';
+  let rows = '';
+  for (let i = 0; i < segments.length; i++) {
+    const s = segments[i];
+    const flightNo = [s.airline, s.flightNumber].filter(Boolean).join(' ');
+    const dur = hoursMin(legDurationMin(s));
+    rows +=
+      `<div class="leg">✈ ${flightNo ? flightNo + ' · ' : ''}` +
+      `המראה ${s.departureAirport} ${fmtTime(s.departureTime)} · ` +
+      `נחיתה ${s.arrivalAirport} ${fmtTime(s.arrivalTime)}${dur ? ` · (${dur})` : ''}</div>`;
+    const next = segments[i + 1];
+    if (next && next.departureAirport === s.arrivalAirport) {
+      const lay = hoursMin(layoverMin(s.arrivalTime, next.departureTime));
+      rows += `<div class="lay">⏱ המתנה ב-${s.arrivalAirport}${lay ? `: ${lay}` : ''}</div>`;
+    }
+  }
+  return `<div class="itin"><div class="itin-h">${labelHe}</div>${rows}</div>`;
+}
+
 /** Windows toast. Best-effort: the HTML report is the alert that always works. */
 function toast(title, body) {
   const esc = (s) => String(s).replace(/[&<>']/g, (c) =>
@@ -470,6 +532,8 @@ function writeReport(cfg, state, now) {
           const under = effEntry(cfg, e) <= cfg.alertTotalUsd;
           const pref = entryPreferred(e);
           const airlines = (e.airlines || []).join(', ') + (pref ? ' <span class="star">★</span>' : '');
+          const sched = renderItinerary('הלוך', e.outbound) + renderItinerary('חזור', e.returnLegs);
+          const detail = sched ? `<tr class="sched"><td colspan="8">${sched}</td></tr>` : '';
           return `<tr class="${under ? 'good' : ''}${pref ? ' pref' : ''}">
       <td>${fmtDate(outbound)} → ${fmtDate(back)}</td>
       <td>${nights}</td>
@@ -479,7 +543,7 @@ function writeReport(cfg, state, now) {
       <td>${airlines}</td>
       <td>${verified ? '✅ שבת נבדקה' : '⏳ הלוך בלבד'}</td>
       <td><a href="${googleFlightsLink(cfg, outbound, back)}" target="_blank">הזמנה</a></td>
-    </tr>`;
+    </tr>${detail}`;
         })
         .join('\n')
     : '<tr><td colspan="8">עוד לא נמצאה אפשרות ששומרת שבת.</td></tr>';
@@ -503,10 +567,16 @@ function writeReport(cfg, state, now) {
  .star{color:#c8890f;font-weight:700}
  tr:last-child td{border-bottom:0}
  a{color:#0b5cad}
+ tr.sched td{background:#faf8f3;padding-top:.2rem;font-size:.88rem}
+ .itin{margin:.3rem 0}
+ .itin-h{font-weight:600;color:#666;font-size:.8rem;margin-bottom:.15rem}
+ .leg{color:#222;direction:rtl}
+ .lay{color:#9a6a00;margin:.1rem 1.2rem}
  @media(prefers-color-scheme:dark){
   body{background:#141414;color:#eee} .card,table{background:#1e1e1e;border-color:#333}
   th{background:#262626;color:#bbb} th,td{border-color:#2c2c2c} a{color:#6fb3f2}
-  tr.good .p{color:#4ade80} tr.pref{background:#2a2515} .star{color:#e8b23a}}
+  tr.good .p{color:#4ade80} tr.pref{background:#2a2515} .star{color:#e8b23a}
+  tr.sched td{background:#191919} .itin-h{color:#aaa} .leg{color:#ddd} .lay{color:#e8b23a}}
 </style>
 <h1>זנזיבר — מעקב טיסות</h1>
 <p class="sub">עודכן ${now.toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' })} ·
@@ -616,6 +686,7 @@ async function sweep(cfg, now) {
       checkedAt: now.toISOString(),
       candidatePrice: cheapest?.price,
       candidatePreferred: candPref,
+      outbound: cheapest?.segments, // schedule of the outbound half
       priceLevel: insights?.priceLevel ?? prev.priceLevel,
       typicalRange: insights?.typicalRange ?? prev.typicalRange,
       // A verified price is stale once the candidate moves.
@@ -668,6 +739,8 @@ async function sweep(cfg, now) {
       airlines,
       preferred,
       stops: Math.max(combo.leader.stops, winner.stops),
+      outbound: combo.leader.segments, // both halves' schedules, for the report
+      returnLegs: winner.segments,
     };
     console.log(
       `  ✅ ${combo.outbound}→${combo.back}: ${money(winner.price)}${preferred ? ' ★' : ''} (שבת נבדקה)`,
