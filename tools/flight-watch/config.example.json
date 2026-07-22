@@ -9,6 +9,8 @@
   "maxNights": 8,
   "adults": 2,
   "alertTotalUsd": 2400,
+  "preferredAirlines": ["Arkia"],
+  "preferredBonusUsd": 150,
   "maxStops": 2,
   "currency": "USD",
   "searchesPerRun": 12,

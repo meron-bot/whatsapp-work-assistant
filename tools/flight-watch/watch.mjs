@@ -345,10 +345,10 @@ function candidateCombos(cfg, now) {
 }
 
 /** Current price leaders (catch a drop fast) + least-recently-checked (rotate). */
-function pickBatch(combos, state, budget) {
+function pickBatch(cfg, combos, state, budget) {
   const priced = combos
     .filter((c) => typeof state.combos[c.key]?.candidatePrice === 'number')
-    .sort((a, b) => state.combos[a.key].candidatePrice - state.combos[b.key].candidatePrice);
+    .sort((a, b) => effEntry(cfg, state.combos[a.key]) - effEntry(cfg, state.combos[b.key]));
   const chosen = new Map(priced.slice(0, Math.min(3, Math.floor(budget / 3))).map((c) => [c.key, c]));
   const stale = [...combos].sort(
     (a, b) => checkedMs(state, a.key) - checkedMs(state, b.key),
@@ -363,11 +363,47 @@ function pickBatch(combos, state, budget) {
 const checkedMs = (state, key) =>
   state.combos[key]?.checkedAt ? new Date(state.combos[key].checkedAt).getTime() : 0;
 
-function bestCombo(state) {
+/**
+ * Preferred-airline advantage. The owner is willing to pay `preferredBonusUsd`
+ * extra to fly one of `preferredAirlines`, so a preferred itinerary competes as
+ * if it were that much cheaper — in ranking, in "best" selection, and in the
+ * alert threshold. The REAL price is always what gets displayed; the bonus only
+ * shifts comparisons. Match is a case-insensitive substring, so "Arkia" catches
+ * "Arkia", "Arkia Israel Airlines", etc.
+ */
+function isPreferred(cfg, airlines) {
+  const prefs = (cfg.preferredAirlines || []).map((s) => String(s).toLowerCase());
+  if (!prefs.length) return false;
+  return (airlines || []).some((a) => prefs.some((p) => String(a).toLowerCase().includes(p)));
+}
+
+/** Effective price of a freshly parsed option (has .price and .airlines). */
+function effOpt(cfg, opt) {
+  return opt.price - (isPreferred(cfg, opt.airlines) ? cfg.preferredBonusUsd || 0 : 0);
+}
+
+/** Effective price of a stored combo entry, verified or candidate-only. */
+function effEntry(cfg, e) {
+  const price = e.price ?? e.candidatePrice ?? Infinity;
+  const pref = e.price !== undefined ? e.preferred : e.candidatePreferred;
+  return price - (pref ? cfg.preferredBonusUsd || 0 : 0);
+}
+
+/** True if a stored entry's itinerary is on a preferred airline. */
+function entryPreferred(e) {
+  return e.price !== undefined ? Boolean(e.preferred) : Boolean(e.candidatePreferred);
+}
+
+function bestCombo(cfg, state) {
   let best = null;
+  let bestEff = Infinity;
   for (const [key, e] of Object.entries(state.combos)) {
     if (typeof e.price !== 'number') continue;
-    if (!best || e.price < best.entry.price) best = { key, entry: e };
+    const eff = effEntry(cfg, e);
+    if (eff < bestEff) {
+      best = { key, entry: e };
+      bestEff = eff;
+    }
   }
   return best;
 }
@@ -418,9 +454,11 @@ function openInBrowser(path) {
 }
 
 function writeReport(cfg, state, now) {
+  // Rank by EFFECTIVE price so a preferred airline surfaces above a marginally
+  // cheaper rival, matching how "best" and alerts treat it.
   const rows = Object.entries(state.combos)
     .filter(([, e]) => typeof e.price === 'number' || typeof e.candidatePrice === 'number')
-    .sort((a, b) => (a[1].price ?? a[1].candidatePrice) - (b[1].price ?? b[1].candidatePrice));
+    .sort((a, b) => effEntry(cfg, a[1]) - effEntry(cfg, b[1]));
 
   const body = rows.length
     ? rows
@@ -429,14 +467,16 @@ function writeReport(cfg, state, now) {
           const back = iso(addDays(new Date(outbound), Number(nights)));
           const price = e.price ?? e.candidatePrice;
           const verified = typeof e.price === 'number';
-          const under = price <= cfg.alertTotalUsd;
-          return `<tr class="${under ? 'good' : ''}">
+          const under = effEntry(cfg, e) <= cfg.alertTotalUsd;
+          const pref = entryPreferred(e);
+          const airlines = (e.airlines || []).join(', ') + (pref ? ' <span class="star">★</span>' : '');
+          return `<tr class="${under ? 'good' : ''}${pref ? ' pref' : ''}">
       <td>${fmtDate(outbound)} → ${fmtDate(back)}</td>
       <td>${nights}</td>
       <td class="p">${money(price)}</td>
       <td>${money(price / cfg.adults)}</td>
       <td>${stopsLabel(e.stops)}</td>
-      <td>${(e.airlines || []).join(', ')}</td>
+      <td>${airlines}</td>
       <td>${verified ? '✅ שבת נבדקה' : '⏳ הלוך בלבד'}</td>
       <td><a href="${googleFlightsLink(cfg, outbound, back)}" target="_blank">הזמנה</a></td>
     </tr>`;
@@ -444,7 +484,8 @@ function writeReport(cfg, state, now) {
         .join('\n')
     : '<tr><td colspan="8">עוד לא נמצאה אפשרות ששומרת שבת.</td></tr>';
 
-  const best = bestCombo(state);
+  const best = bestCombo(cfg, state);
+  const prefName = (cfg.preferredAirlines || []).join(', ');
   const html = `<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8">
 <title>זנזיבר — מעקב טיסות</title>
 <style>
@@ -458,25 +499,28 @@ function writeReport(cfg, state, now) {
  th,td{padding:.6rem .75rem;text-align:right;border-bottom:1px solid #f0ede8}
  th{background:#f6f4f1;font-weight:600;font-size:.85rem;color:#555}
  tr.good .p{color:#0a7d34;font-weight:700}
+ tr.pref{background:#fff8ea}
+ .star{color:#c8890f;font-weight:700}
  tr:last-child td{border-bottom:0}
  a{color:#0b5cad}
  @media(prefers-color-scheme:dark){
   body{background:#141414;color:#eee} .card,table{background:#1e1e1e;border-color:#333}
   th{background:#262626;color:#bbb} th,td{border-color:#2c2c2c} a{color:#6fb3f2}
-  tr.good .p{color:#4ade80}}
+  tr.good .p{color:#4ade80} tr.pref{background:#2a2515} .star{color:#e8b23a}}
 </style>
 <h1>זנזיבר — מעקב טיסות</h1>
 <p class="sub">עודכן ${now.toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' })} ·
  ${cfg.origin}→${cfg.destination} · ${cfg.adults} נוסעים · תקציב ${money(cfg.alertTotalUsd)}</p>
 <div class="card">
  <div>הכי זול שנמצא (שבת נבדקה):</div>
- <div class="big">${best ? money(best.entry.price) : '—'}</div>
+ <div class="big">${best ? money(best.entry.price) : '—'}${best && entryPreferred(best.entry) ? ' <span class="star">★</span>' : ''}</div>
  <div>${best ? buyAdvice(cfg, best.entry, state, now) : 'עוד אין מספיק נתונים.'}</div>
 </div>
 <table><thead><tr><th>תאריכים</th><th>לילות</th><th>סה"כ</th><th>לאדם</th>
 <th>עצירות</th><th>חברה</th><th>סטטוס</th><th></th></tr></thead>
 <tbody>${body}</tbody></table>
-<p class="sub" style="margin-top:1rem">זמני שבת מ-Hebcal. נפסלת כל טיסה או עצירה בין
+${prefName ? `<p class="sub" style="margin-top:1rem"><span class="star">★</span> = חברה מועדפת (${prefName}). מקבלת יתרון של ${money(cfg.preferredBonusUsd || 0)} בדירוג ובהתראות — המחיר המוצג הוא האמיתי.</p>` : ''}
+<p class="sub" style="margin-top:.5rem">זמני שבת מ-Hebcal. נפסלת כל טיסה או עצירה בין
  כניסת שבת (המוקדמת מבין תל אביב וזנזיבר) ליציאתה (המאוחרת מביניהן).</p>
 </html>`;
   writeFileSync(REPORT_PATH, html, 'utf8');
@@ -546,7 +590,7 @@ async function sweep(cfg, now) {
   state.combos ||= {};
   state.history ||= [];
 
-  const batch = pickBatch(combos, state, cfg.searchesPerRun);
+  const batch = pickBatch(cfg, combos, state, cfg.searchesPerRun);
   let spent = 0;
 
   // ---- phase 1: price each pair, keep only Shabbat-clean outbounds ---------
@@ -560,12 +604,18 @@ async function sweep(cfg, now) {
     }
     const insights = parseInsights(raw);
     const clean = parseOptions(raw).filter((o) => checkShabbat([o.segments], windows).status === 'safe');
-    const cheapest = clean.length ? clean.reduce((a, b) => (a.price <= b.price ? a : b)) : null;
+    // Leader by EFFECTIVE price: a preferred-airline outbound that is a little
+    // pricier still wins, so its return legs are the ones we pay to verify.
+    const cheapest = clean.length
+      ? clean.reduce((a, b) => (effOpt(cfg, a) <= effOpt(cfg, b) ? a : b))
+      : null;
+    const candPref = cheapest ? isPreferred(cfg, cheapest.airlines) : undefined;
 
     state.combos[combo.key] = {
       ...prev,
       checkedAt: now.toISOString(),
       candidatePrice: cheapest?.price,
+      candidatePreferred: candPref,
       priceLevel: insights?.priceLevel ?? prev.priceLevel,
       typicalRange: insights?.typicalRange ?? prev.typicalRange,
       // A verified price is stale once the candidate moves.
@@ -573,12 +623,12 @@ async function sweep(cfg, now) {
     };
     if (cheapest?.departureToken) combo.leader = cheapest;
 
-    const tag = cheapest ? money(cheapest.price) : 'אין אפשרות ששומרת שבת';
+    const tag = cheapest ? money(cheapest.price) + (candPref ? ' ★' : '') : 'אין אפשרות ששומרת שבת';
     console.log(`  ${combo.outbound}→${combo.back} (${combo.nights}ל): ${tag}`);
   }
 
   // ---- phase 2: verify return legs only where it could matter -------------
-  const best = bestCombo(state);
+  const best = bestCombo(cfg, state);
   const bestPrice = best ? best.entry.price : Infinity;
   const toVerify = batch
     .filter((c) => c.leader)
@@ -602,19 +652,29 @@ async function sweep(cfg, now) {
       console.log(`  ${combo.outbound}: כל טיסות החזור נופלות על שבת`);
       continue;
     }
-    const winner = clean.reduce((a, b) => (a.price <= b.price ? a : b));
+    // Winner by effective TOTAL, where a leg on a preferred airline (outbound or
+    // return) makes the whole itinerary preferred.
+    const airlinesOf = (o) => [...new Set([...combo.leader.airlines, ...o.airlines])];
+    const effReturn = (o) =>
+      o.price - (isPreferred(cfg, airlinesOf(o)) ? cfg.preferredBonusUsd || 0 : 0);
+    const winner = clean.reduce((a, b) => (effReturn(a) <= effReturn(b) ? a : b));
+    const airlines = airlinesOf(winner);
+    const preferred = isPreferred(cfg, airlines);
     state.combos[combo.key] = {
       ...state.combos[combo.key],
       // The return result carries the true total, which can exceed the phase-1
       // headline when the cheapest return hits Shabbat.
       price: winner.price,
-      airlines: [...new Set([...combo.leader.airlines, ...winner.airlines])],
+      airlines,
+      preferred,
       stops: Math.max(combo.leader.stops, winner.stops),
     };
-    console.log(`  ✅ ${combo.outbound}→${combo.back}: ${money(winner.price)} (שבת נבדקה)`);
+    console.log(
+      `  ✅ ${combo.outbound}→${combo.back}: ${money(winner.price)}${preferred ? ' ★' : ''} (שבת נבדקה)`,
+    );
   }
 
-  const final = bestCombo(state);
+  const final = bestCombo(cfg, state);
   if (final) state.history.push([now.toISOString(), final.entry.price]);
   state.history = state.history.slice(-200);
 
@@ -622,21 +682,24 @@ async function sweep(cfg, now) {
 
   // ---- alert --------------------------------------------------------------
   if (final) {
-    const price = final.entry.price;
-    const already = final.entry.alertedAt;
-    const improved = already === undefined || price <= already * (1 - RE_ALERT_DROP);
-    if (price <= cfg.alertTotalUsd && improved) {
-      const urgent = price <= cfg.alertTotalUsd * (1 - URGENT_MARGIN);
+    const price = final.entry.price; // real, always what we show
+    const eff = effEntry(cfg, final.entry); // effective, drives the decision
+    const already = final.entry.alertedAt; // stored as effective too
+    const improved = already === undefined || eff <= already * (1 - RE_ALERT_DROP);
+    if (eff <= cfg.alertTotalUsd && improved) {
+      const urgent = eff <= cfg.alertTotalUsd * (1 - URGENT_MARGIN);
       const [outbound, nights] = final.key.split('|');
       const back = iso(addDays(new Date(outbound), Number(nights)));
       const title = urgent ? '🚨 מחיר חריג לזנזיבר' : '✈️ טיסה מתחת לתקציב';
-      const line = `${money(price)} לשניים · ${fmtDate(outbound)}→${fmtDate(back)}`;
+      const pref = entryPreferred(final.entry) ? ' · ★ ארקיע' : '';
+      const line = `${money(price)} לשניים${pref} · ${fmtDate(outbound)}→${fmtDate(back)}`;
       console.log(`\n${title}: ${line}`);
       await toast(title, line);
       await openInBrowser(REPORT_PATH); // impossible to miss if you're at the machine
-      state.combos[final.key].alertedAt = price;
+      state.combos[final.key].alertedAt = eff;
     } else {
-      console.log(`\nהכי זול כרגע: ${money(price)} (הסף: ${money(cfg.alertTotalUsd)})`);
+      const mark = entryPreferred(final.entry) ? ' (★ ארקיע)' : '';
+      console.log(`\nהכי זול כרגע: ${money(price)}${mark} (הסף: ${money(cfg.alertTotalUsd)})`);
     }
   } else {
     console.log('\nעוד לא נמצאה אפשרות מאומתת ששומרת שבת.');
@@ -692,6 +755,22 @@ async function selfTest() {
     if (!ok) failed++;
     console.log(`  ${ok ? '✅' : '❌'} ${name} → ${got}${ok ? '' : ` (ציפיתי ${expected})`}`);
   }
+
+  // Preferred-airline advantage (pure logic, no API call).
+  console.log('\nבודק את היתרון לחברה מועדפת (ארקיע $150):');
+  const pcfg = { preferredAirlines: ['Arkia'], preferredBonusUsd: 150 };
+  const prefCases = [
+    ['מזהה ארקיע בשם מלא', isPreferred(pcfg, ['Arkia Israel Airlines']) === true],
+    ['לא מזהה חברה אחרת', isPreferred(pcfg, ['flydubai']) === false],
+    ['ארקיע $2,540 מנצחת רגילה $2,456', effOpt(pcfg, { price: 2540, airlines: ['Arkia'] }) < effOpt(pcfg, { price: 2456, airlines: ['flydubai'] })],
+    ['אבל ארקיע $2,700 לא מנצחת $2,456', effOpt(pcfg, { price: 2700, airlines: ['Arkia'] }) > effOpt(pcfg, { price: 2456, airlines: ['flydubai'] })],
+    ['מחיר אפקטיבי מוריד רק את הבונוס', effEntry(pcfg, { price: 2540, preferred: true }) === 2390],
+  ];
+  for (const [name, ok] of prefCases) {
+    if (!ok) failed++;
+    console.log(`  ${ok ? '✅' : '❌'} ${name}`);
+  }
+
   console.log(failed ? `\n${failed} בדיקות נכשלו.` : '\nכל הבדיקות עברו.');
   if (failed) process.exitCode = 1;
 }
